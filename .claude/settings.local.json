@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la && echo \"---MSBUILD---\" && ls \"/d/Program Files/Vscom/MSBuild/15.0/Bin/msbuild.exe\" 2>&1 | head -1 && echo \"---NUGET---\" && ls nuget.exe 2>&1 | head -1)",
+      "Bash(./nuget.exe restore *)",
+      "Bash(\"/d/Program Files/Vscom/MSBuild/15.0/Bin/msbuild.exe\" \"CS-Ray.sln\" /t:Build /p:Configuration=Debug /v:minimal /nologo)",
+      "PowerShell(& \"D:\\\\Program Files\\\\Vscom\\\\MSBuild\\\\15.0\\\\Bin\\\\msbuild.exe\" \"C:\\\\Users\\\\hamed\\\\source\\\\repos\\\\CS-Ray\\\\CS-Ray.sln\" /t:Build /p:Configuration=Debug /v:minimal /nologo)",
+      "PowerShell($o=\"C:\\\\Users\\\\hamed\\\\source\\\\repos\\\\CS-Ray\\\\CS-Ray\\\\bin\\\\Debug\"; Get-ChildItem $o -Name; \"---\"; \\([System.Reflection.Assembly]::ReflectionOnlyLoadFrom\\(\"$o\\\\CS-Ray.exe\"\\).GetCustomAttributesData\\(\\) | Where-Object { $_.AttributeType.Name -eq 'TargetFrameworkAttribute' }\\).ConstructorArguments[0].Value)",
+      "Bash(cd /c/Users/hamed/source/repos/_eval/VEthernet 2>&1 && echo \"=== top level ===\" && ls && echo \"\" && echo \"=== .sln / .csproj ===\" && find . -name \"*.sln\" -o -name \"*.csproj\" | head -30)",
+      "Bash(cd /c/Users/hamed/source/repos/CS-Ray/CS-Ray && grep -n \"TunDevice.StopActive\" Program.cs)",
+      "PowerShell(Get-Process -Name \"CS-Ray\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(& \"C:\\\\Users\\\\hamed\\\\source\\\\repos\\\\CS-Ray\\\\nuget.exe\" restore \"C:\\\\Users\\\\hamed\\\\source\\\\repos\\\\CS-Ray\\\\CS-Ray.sln\" -MSBuildPath \"D:\\\\Program Files\\\\Vscom\\\\MSBuild\\\\15.0\\\\Bin\")",
+      "PowerShell(Get-Process CS-Ray -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "PowerShell($p = Get-Process CS-Ray -ErrorAction SilentlyContinue; if \\($p\\) { \"RUNNING \\(pid $\\($p.Id\\)\\) — Exit it from the tray, then I'll build.\" } else { & \"D:\\\\Program Files\\\\Vscom\\\\MSBuild\\\\15.0\\\\Bin\\\\msbuild.exe\" \"C:\\\\Users\\\\hamed\\\\source\\\\repos\\\\CS-Ray\\\\CS-Ray.sln\" /t:Build /p:Configuration=Debug /v:minimal /nologo })",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "Bash(find . -iname \"wintun*.dll\" -not -path \"*/bin/*\" -not -path \"*/obj/*\")",
+      "Bash(find . -type d -iname \"wintun\")",
+      "Bash(ls -la .gitignore LICENSE README.md)",
+      "Bash(ls CS-Ray/Properties/*.resx CS-Ray/icon/ CS-Ray/Fonts/)",
+      "Bash(grep -rl \"requireAdministrator\\\\|asInvoker\" CS-Ray/*.manifest CS-Ray/Properties/*.manifest)",
+      "Bash(ls CS-Ray/*.manifest)",
+      "Bash(grep -rniE \"BaseDirectory|DefaultPath|csray\\\\.log|GetTempPath|SpecialFolder|ApplicationData|AppData\" CS-Ray/Core CS-Ray/UI CS-Ray/Program.cs)",
+      "Bash(find CS-Ray -iname \"*.manifest\")",
+      "Bash(grep -niE \"ApplicationManifest|requireAdministrator|asInvoker\" CS-Ray/CS-Ray.csproj)"
+    ]
+  }
+}

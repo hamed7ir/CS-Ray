@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{26961240-A6DB-4DED-874B-45FDC56FE3E9}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>CS_Ray</RootNamespace>
+    <AssemblyName>CS-Ray</AssemblyName>
+    <TargetFrameworkVersion>v4.7</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+    <LangVersion>7.3</LangVersion>
+    <ApplicationIcon>icon\favicon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>true</Prefer32Bit>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>true</Prefer32Bit>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Deployment" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Core\Transport\ITransport.cs" />
+    <Compile Include="Core\Transport\TcpTransport.cs" />
+    <Compile Include="Core\Transport\TlsTransport.cs" />
+    <Compile Include="Core\Transport\WebSocketTransport.cs" />
+    <Compile Include="Core\Transport\XhttpTransport.cs" />
+    <Compile Include="Core\Inbound\MixedInbound.cs" />
+    <Compile Include="Core\Protocol\VlessProtocol.cs" />
+    <Compile Include="Core\Protocol\ProxyClients.cs" />
+    <Compile Include="Core\Protocol\IUdpOutbound.cs" />
+    <Compile Include="Core\Protocol\VlessUdpSession.cs" />
+    <Compile Include="Core\Protocol\ShadowsocksProtocol.cs" />
+    <Compile Include="Core\Protocol\Vmess\VmessKdf.cs" />
+    <Compile Include="Core\Protocol\Vmess\VmessAead.cs" />
+    <Compile Include="Core\Protocol\Vmess\VmessRequest.cs" />
+    <Compile Include="Core\Protocol\Vmess\VmessBodyStream.cs" />
+    <Compile Include="Core\Protocol\Vmess\VmessProtocol.cs" />
+    <Compile Include="Core\Protocol\Vmess\VMessUdpSession.cs" />
+    <Compile Include="Core\Protocol\Vmess\VmessSelfTest.cs" />
+    <Compile Include="Core\ProxyEngine.cs" />
+    <Compile Include="Core\DelayTester.cs" />
+    <Compile Include="Core\StreamRelay.cs" />
+    <Compile Include="Core\SystemProxy.cs" />
+    <Compile Include="Core\Tun\WintunApi.cs" />
+    <Compile Include="Core\Tun\WintunLoader.cs" />
+    <Compile Include="Core\Tun\TunDevice.cs" />
+    <Compile Include="Core\Tun\TunNetwork.cs" />
+    <Compile Include="Core\Tun\Checksums.cs" />
+    <Compile Include="Core\Tun\PacketFilter.cs" />
+    <Compile Include="Core\Tun\IcmpHandler.cs" />
+    <Compile Include="Core\Tun\UdpHandler.cs" />
+    <Compile Include="Core\Tun\Tcp\TcpSegment.cs" />
+    <Compile Include="Core\Tun\Tcp\TcpConnection.cs" />
+    <Compile Include="Core\Tun\Tcp\TcpStack.cs" />
+    <Compile Include="Core\Config\ProxyProfile.cs" />
+    <Compile Include="Core\Config\ProfileStore.cs" />
+    <Compile Include="Core\Config\Subscription.cs" />
+    <Compile Include="Core\Config\SubscriptionFetcher.cs" />
+    <Compile Include="Core\Config\LinkParser.cs" />
+    <Compile Include="Core\Config\LinkParserSelfTest.cs" />
+    <Compile Include="UI\MainForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\ThemeHelper.cs" />
+    <Compile Include="UI\FontHelper.cs" />
+    <Compile Include="UI\AddEditServerDialog.cs" />
+    <Compile Include="UI\GroupTabStrip.cs" />
+    <Compile Include="UI\SettingsPopup.cs" />
+    <Compile Include="UI\ThemedContextMenuStrip.cs" />
+    <Compile Include="UI\ThemedScrollBar.cs" />
+    <Compile Include="UI\TouchScroller.cs" />
+    <Compile Include="UI\SubEditDialog.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="SingleInstance.cs" />
+    <Compile Include="ConflictScanner.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <EmbeddedResource Include="Properties\Resources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <Compile Include="Properties\Resources.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+    <None Include="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+    <Compile Include="Properties\Settings.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Portable.BouncyCastle" Version="1.9.0" />
+    <PackageReference Include="MaterialSkin.2" Version="2.3.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Fonts\Roboto-Regular.ttf" />
+    <EmbeddedResource Include="Fonts\Roboto-Medium.ttf" />
+    <EmbeddedResource Include="Fonts\Roboto-Bold.ttf" />
+    <EmbeddedResource Include="icon\favicon.ico" />
+    <EmbeddedResource Include="icon\favicon-on.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

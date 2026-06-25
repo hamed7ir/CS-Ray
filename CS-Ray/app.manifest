@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="CS-Ray.app" type="win32" />
+
+  <!-- TUN (Wintun) requires elevation. requireAdministrator makes every launch prompt for UAC
+       so TUN/full-tunnel works. NOTE: this also elevates the system-proxy-only path (which would
+       otherwise run un-elevated) and triggers a UAC prompt on every start — intended for this release.
+       DPI is handled in code via SetProcessDpiAwareness(1) in Program.Main, so this manifest deliberately
+       declares NO dpiAware to avoid conflicting with that call. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v2">
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>
