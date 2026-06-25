@@ -1,3 +1,13 @@
+CS-Ray is licensed under the GNU General Public License v3.0.
+SPDX-License-Identifier: GPL-3.0-only
+
+Copyright (C) 2026 The CS-Ray authors.
+
+NOTE: The bundled Wintun DLLs (CS-Ray/wintun/<arch>/wintun.dll) are NOT covered by
+this GPLv3 license. They are redistributed under the separate "Wintun Prebuilt
+Binaries License" — see THIRD-PARTY-NOTICES.md.
+
+----------------------------------------------------------------------------------
 GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

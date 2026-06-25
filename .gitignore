@@ -399,3 +399,29 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# ── CS-Ray project-specific ──────────────────────────────────────────────────
+# Claude Code working data + config (never publish — may contain session transcripts)
+.claude/
+.claudeignore
+
+# Internal development notes (kept out of the public repo)
+CLAUDE.md
+LESSONS_LEARNED.md
+BUGS_AND_FIXES.md
+CREATIVE_DECISIONS.md
+
+# Committed NuGet bootstrap tool — restore with `nuget` / `dotnet` from PATH instead
+nuget.exe
+
+# Public repo docs are intentionally TRACKED — do NOT ignore these:
+!README.md
+!LICENSE
+!CONTRIBUTING.md
+!SECURITY.md
+!THIRD-PARTY-NOTICES.md
+
+# Committed SOURCE assets also stay tracked (there is no global *.dll rule, so these
+# are NOT ignored): CS-Ray/wintun/<arch>/wintun.dll, CS-Ray/icon/, CS-Ray/Fonts/,
+# CS-Ray/Properties/Resources.resx
+
