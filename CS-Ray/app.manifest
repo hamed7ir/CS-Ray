@@ -2,15 +2,19 @@
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
   <assemblyIdentity version="1.0.0.0" name="CS-Ray.app" type="win32" />
 
-  <!-- TUN (Wintun) requires elevation. requireAdministrator makes every launch prompt for UAC
-       so TUN/full-tunnel works. NOTE: this also elevates the system-proxy-only path (which would
-       otherwise run un-elevated) and triggers a UAC prompt on every start — intended for this release.
-       DPI is handled in code via SetProcessDpiAwareness(1) in Program.Main, so this manifest deliberately
-       declares NO dpiAware to avoid conflicting with that call. -->
+  <!-- ON-DEMAND ELEVATION: run as asInvoker so normal launches (and the HKCU Run-key login auto-start) run
+       un-elevated with NO UAC prompt. System-proxy mode needs no admin at all; TUN / full-tunnel is the ONLY path
+       that needs administrator. When the user starts it while un-elevated, the app relaunches ITSELF elevated
+       (ShellExecute verb "runas", passing the elevated-start-tun flag) and hands off to that instance via the
+       single-instance mutex. See MainForm.ElevateForTun / Program.Main. If the user declines the UAC prompt, the
+       un-elevated instance keeps running (system-proxy still works); TUN simply does not start.
+       DPI is handled in code via SetProcessDpiAwareness(1) in Program.Main, so this manifest deliberately declares
+       NO dpiAware to avoid conflicting with that call.
+       NOTE: XML comments must not contain a double hyphen, so flag names are written without their leading dashes. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v2">
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>
