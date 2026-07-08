@@ -3,7 +3,8 @@
 A pure-managed C# (.NET Framework 4.7, WinForms) proxy client with a hand-written
 userspace TUN TCP/IP netstack — built to run a modern proxy client on **legacy ARM32
 Windows** where native cores can't.
-<img width="1216" height="767" alt="photo_2026-07-08_15-38-11" src="https://github.com/user-attachments/assets/c91ab044-3d4d-44d8-bc66-78d2f0b74a68" />
+<img width="912" height="575" alt="csray" src="https://github.com/user-attachments/assets/97aee84b-15c2-4f84-b416-50152570de62" />
+
 
 
 
