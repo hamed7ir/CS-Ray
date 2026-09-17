@@ -79,6 +79,8 @@ legacy ARM32 Windows.
 
 - **Windows 10 ARM32** (build 15035) — the primary target.
 - **Windows RT 8.1** (jailbroken).
+- **Windows RT 8.0** (jailbroken) — requires the .NET Framework 4.8 update, which is currently
+  difficult to obtain for RT 8.0.
 - **x86 / x64 Windows 7+** (also works; useful for development/testing).
 
 Built **AnyCPU + Prefer32Bit** so a single binary JITs to ARM32 or runs 32-bit on x64.
