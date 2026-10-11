@@ -36,10 +36,12 @@ namespace CS_Ray.UI
         private readonly ThemedTextBox _txtPassword = NewText("Password");
         private readonly ThemedTextBox _txtWsHost = NewText("Host (ws / xhttp / http header; comma-separated for http)");
         private readonly ThemedTextBox _txtWsPath = NewText("Path (ws / xhttp / http header)");
-        private readonly ThemedTextBox _txtSni = NewText("SNI (TLS server name)");
-        private readonly ToggleSwitch _swTls = new ToggleSwitch();
+        private readonly ThemedComboBox _cboSecurity = NewCombo("Security");
+        private readonly ThemedTextBox _txtSni = NewText("SNI (TLS / REALITY server name)");
+        private readonly ThemedTextBox _txtPbk = NewText("REALITY public key (pbk)");
+        private readonly ThemedTextBox _txtSid = NewText("REALITY short ID (sid, hex — optional)");
+        private readonly ThemedComboBox _cboFp = NewCombo("Fingerprint (fp)");
         private readonly ToggleSwitch _swInsecure = new ToggleSwitch();
-        private readonly Label _lblTls = NewToggleLabel("TLS");
         private readonly Label _lblInsecure = NewToggleLabel("Allow insecure (skip cert check)");
         private readonly Label _lblError = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Font = FontHelper.Ui(9f) };
         private readonly Label _lblNote = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Font = FontHelper.Ui(9f) }; // unsupported-server note
@@ -50,6 +52,8 @@ namespace CS_Ray.UI
         private readonly string _editGroup;
         private readonly bool _unsupported;  // editing a recognized-but-unsupported server → show a read-only note
         private readonly string _noteText;
+        private readonly string _keepSpiderX;   // not editable here — carried over so an edit doesn't drop it
+        private readonly string _keepFlow;
 
         /// <summary>The profile produced on OK (null on Cancel).</summary>
         public ProxyProfile Result { get; private set; }
@@ -60,6 +64,8 @@ namespace CS_Ray.UI
             _editGroup = existing?.Group;
             _unsupported = existing != null && existing.Unsupported;
             _noteText = existing?.UnsupportedReason;
+            _keepSpiderX = existing?.SpiderX;
+            _keepFlow = existing?.Flow;
 
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); } };
@@ -67,16 +73,17 @@ namespace CS_Ray.UI
             _cboProtocol.Items.AddRange(new object[] { "vless", "vmess", "shadowsocks", "socks", "http", "https" });
             _cboNetwork.Items.AddRange(new object[] { "tcp", "ws", "xhttp" });
             _cboHeader.Items.AddRange(new object[] { "none", "http" });
+            _cboSecurity.Items.AddRange(new object[] { "none", "tls", "reality" });
+            _cboFp.Items.AddRange(new object[] { "chrome", "edge", "firefox", "safari", "ios", "android", "random" });
             _cboSsMethod.Items.AddRange(SsMethods);
 
             foreach (var c in new Control[] { _cboProtocol, _cboNetwork, _cboHeader, _cboSsMethod, _txtName, _txtAddress,
-                _txtPort, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _txtSni,
-                _lblTls, _swTls, _lblInsecure, _swInsecure, _lblError, _lblNote })
+                _txtPort, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _cboSecurity, _txtSni,
+                _txtPbk, _txtSid, _cboFp, _lblInsecure, _swInsecure, _lblError, _lblNote })
             { if (!(c is ToggleSwitch)) c.Width = FieldW; Body.Host.Controls.Add(c); } // switches keep their DPI-scaled size
             _txtPort.Width = DrawHelper.Px(120);
-            _swTls.TabStop = _swInsecure.TabStop = true;   // keyboard: Tab reaches them, Space flips them
+            _swInsecure.TabStop = true;   // keyboard: Tab reaches it, Space flips it
             // The whole toggle row is the tap target (touch): its label flips the switch too.
-            _lblTls.Click += (s, e) => _swTls.Checked = !_swTls.Checked;
             _lblInsecure.Click += (s, e) => _swInsecure.Checked = !_swInsecure.Checked;
 
             _lblNote.Visible = _unsupported;
@@ -88,10 +95,15 @@ namespace CS_Ray.UI
             _cboProtocol.SelectedIndexChanged += (s, e) => Relayout();
             _cboNetwork.SelectedIndexChanged += (s, e) => Relayout();
             _cboHeader.SelectedIndexChanged += (s, e) => Relayout();
+            _cboSecurity.SelectedIndexChanged += (s, e) => Relayout();
             _btnOk.Click += OnOk;
 
             if (existing != null) LoadFrom(existing);
-            else { _cboProtocol.SelectedIndex = 0; _cboNetwork.SelectedIndex = 0; _cboHeader.SelectedIndex = 0; _cboSsMethod.SelectedIndex = 0; _txtWsPath.Text = "/"; }
+            else
+            {
+                _cboProtocol.SelectedIndex = 0; _cboNetwork.SelectedIndex = 0; _cboHeader.SelectedIndex = 0; _cboSsMethod.SelectedIndex = 0;
+                _cboSecurity.SelectedItem = "tls"; _cboFp.SelectedIndex = 0; _txtWsPath.Text = "/";
+            }
 
             ApplyDialogTheme();
             Relayout();
@@ -100,14 +112,15 @@ namespace CS_Ray.UI
         private string Proto => (_cboProtocol.SelectedItem as string) ?? "vless";
         private string Net => (_cboNetwork.SelectedItem as string) ?? "tcp";
         private string Hdr => (_cboHeader.SelectedItem as string) ?? "none";
+        private string Sec => (_cboSecurity.SelectedItem as string) ?? "tls";
 
         protected override void ApplyDialogTheme()
         {
             base.ApplyDialogTheme();
             if (_lblError == null) return; // base ctor runs this before the fields exist
             var p = ThemeHelper.Palette();
-            foreach (var l in new[] { _lblTls, _lblInsecure, _lblError, _lblNote }) l.BackColor = p.Surface;
-            _lblTls.ForeColor = _lblInsecure.ForeColor = p.Text;
+            foreach (var l in new[] { _lblInsecure, _lblError, _lblNote }) l.BackColor = p.Surface;
+            _lblInsecure.ForeColor = p.Text;
             _lblError.ForeColor = _lblNote.ForeColor = p.Error;
         }
 
@@ -122,6 +135,7 @@ namespace CS_Ray.UI
             bool wsOrXhttp = ws || xhttp;
             bool tcp = vlessLike && Net == "tcp";
             bool tcpHttp = tcp && Hdr == "http";          // tcp http-header camouflage uses Host / Path too
+            bool reality = vless && tcp && !tcpHttp && Sec == "reality";   // REALITY: VLESS over plain tcp only
 
             _tabIndex = 0;
             int y = DrawHelper.Px(10);
@@ -143,9 +157,12 @@ namespace CS_Ray.UI
             Place(_cboHeader, ref y, tcp);
             Place(_txtWsHost, ref y, wsOrXhttp || tcpHttp);
             Place(_txtWsPath, ref y, wsOrXhttp || tcpHttp);
-            Place(_txtSni, ref y, vlessLike || https);         // vless TLS/xhttp + https-proxy TLS
-            PlaceToggle(_lblTls, _swTls, ref y, vlessLike && !xhttp);   // xhttp implies TLS — hide the toggle
-            PlaceToggle(_lblInsecure, _swInsecure, ref y, vlessLike || https);
+            Place(_cboSecurity, ref y, vlessLike && !xhttp);   // xhttp implies TLS — no choice to make
+            Place(_txtSni, ref y, vlessLike || https);         // vless TLS/REALITY/xhttp + https-proxy TLS
+            Place(_txtPbk, ref y, reality);
+            Place(_txtSid, ref y, reality);
+            Place(_cboFp, ref y, reality);
+            PlaceToggle(_lblInsecure, _swInsecure, ref y, (vlessLike && !reality) || https);   // REALITY authenticates by key
 
             int errH = Math.Max(DrawHelper.Px(22), _lblError.Font.Height + DrawHelper.Px(6));
             _lblError.SetBounds(FieldX, y, FieldW, errH); _lblError.Visible = true; y += errH + Gap;
@@ -237,7 +254,25 @@ namespace CS_Ray.UI
                 prof.Network = Net;
                 prof.Sni = (_txtSni.Text ?? "").Trim();
                 prof.AllowInsecure = _swInsecure.Checked;
-                prof.UseTls = (Net == "xhttp") || _swTls.Checked; // xhttp implies TLS
+                string sec = Net == "xhttp" ? "tls" : Sec;      // xhttp implies TLS
+                prof.UseTls = sec != "none";
+                prof.Flow = _keepFlow;
+                if (sec == "reality")
+                {
+                    if (proto != "vless") return "REALITY is supported for VLESS only.";
+                    if (Net != "tcp" || Hdr == "http") return "REALITY works over plain tcp only (no ws / xhttp / http header).";
+                    string pbk = (_txtPbk.Text ?? "").Trim(), sid = (_txtSid.Text ?? "").Trim();
+                    if (Core.Transport.Tls13.RealityConfig.ParsePublicKey(pbk) == null)
+                        return "Public key must be the server's X25519 key (43-character base64url, as in pbk=).";
+                    if (Core.Transport.Tls13.RealityConfig.ParseShortId(sid) == null)
+                        return "Short ID must be 0–16 hex characters (even length).";
+                    if (prof.Sni.Length == 0) return "REALITY needs an SNI — one of the server's serverNames.";
+                    prof.Reality = true;
+                    prof.RealityPublicKey = pbk;
+                    prof.RealityShortId = sid;
+                    prof.Fingerprint = (_cboFp.SelectedItem as string) ?? "chrome";
+                    prof.SpiderX = _keepSpiderX;
+                }
                 prof.HeaderType = Net == "tcp" && Hdr == "http" ? "http" : null;
                 if (Net == "ws" || Net == "xhttp" || prof.HeaderType == "http")
                 {
@@ -274,7 +309,12 @@ namespace CS_Ray.UI
             _txtWsPath.Text = string.IsNullOrEmpty(p.WsPath) ? "/" : p.WsPath;
             _txtWsHost.Text = p.WsHost;
             _txtSni.Text = p.Sni;
-            _swTls.Checked = p.UseTls;
+            _cboSecurity.SelectedItem = p.Reality ? "reality" : p.UseTls ? "tls" : "none";
+            _txtPbk.Text = p.RealityPublicKey;
+            _txtSid.Text = p.RealityShortId;
+            string fp = string.IsNullOrEmpty(p.Fingerprint) ? "chrome" : p.Fingerprint.ToLowerInvariant();
+            if (_cboFp.Items.IndexOf(fp) < 0) _cboFp.Items.Add(fp);   // keep an exotic fp (qq, 360, randomized…) as-is
+            _cboFp.SelectedItem = fp;
             _swInsecure.Checked = p.AllowInsecure;
         }
 

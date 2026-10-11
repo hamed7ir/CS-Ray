@@ -35,6 +35,17 @@ namespace CS_Ray.Core.Config
         public string Sni;
         public bool AllowInsecure;
 
+        /// <summary>VLESS security=reality (UseTls is also true). Share link pbk / sid / fp / spx; Sni = the server name
+        /// the REALITY server impersonates (must be in its serverNames).</summary>
+        public bool Reality;
+        public string RealityPublicKey;  // pbk: the server's X25519 public key (base64url)
+        public string RealityShortId;    // sid: 0–16 hex chars
+        public string Fingerprint;       // fp: uTLS fingerprint name (chrome / edge / …) — picks the ClientHello shape
+        public string SpiderX;           // spx: Xray's fallback-crawler path (camouflage only; kept for export)
+        /// <summary>VLESS flow (e.g. xtls-rprx-vision). Kept so the server stays exact; profiles with a flow are
+        /// unsupported until XTLS Vision lands.</summary>
+        public string Flow;
+
         public string SsMethod;
         public string VmessSecurity = "auto";
 
@@ -69,6 +80,15 @@ namespace CS_Ray.Core.Config
                     c.Uuid = Uuid;
                     c.UseTls = UseTls;   // security=tls vs none (was never passed → every VLESS server was dialed with TLS)
                     c.HeaderType = TcpHeader();
+                    if (Reality)
+                        c.Reality = new Transport.Tls13.RealityConfig
+                        {
+                            // Never let SNI fall back to a pinned dial IP: an empty sni means the server hostname (Xray).
+                            ServerName = string.IsNullOrEmpty(Sni) ? Server : Sni,
+                            PublicKey = Transport.Tls13.RealityConfig.ParsePublicKey(RealityPublicKey),
+                            ShortId = Transport.Tls13.RealityConfig.ParseShortId(RealityShortId) ?? new byte[0],
+                            Fingerprint = Fingerprint,
+                        };
                     break;
                 case "vmess":
                     c.VmessId = Uuid;

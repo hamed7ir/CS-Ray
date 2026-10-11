@@ -61,6 +61,10 @@
     <Compile Include="Core\Transport\HttpHeaderTransport.cs" />
     <Compile Include="Core\Transport\WebSocketTransport.cs" />
     <Compile Include="Core\Transport\XhttpTransport.cs" />
+    <Compile Include="Core\Transport\Tls13\Tls13Crypto.cs" />
+    <Compile Include="Core\Transport\Tls13\ClientHelloBuilder.cs" />
+    <Compile Include="Core\Transport\Tls13\Tls13Stream.cs" />
+    <Compile Include="Core\Transport\Tls13\Tls13Transport.cs" />
     <Compile Include="Core\Inbound\MixedInbound.cs" />
     <Compile Include="Core\Protocol\VlessProtocol.cs" />
     <Compile Include="Core\Protocol\ProxyClients.cs" />

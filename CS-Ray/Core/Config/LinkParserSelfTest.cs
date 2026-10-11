@@ -75,8 +75,24 @@ namespace CS_Ray.Core.Config
             // --- Recognized-but-unsupported: IMPORTED (parsed OK) + tagged with a reason ---
             Unsupported(Check, "tag VLESS grpc",
                 LinkParser.Parse("vless://u@1.2.3.4:443?type=grpc&security=tls"), "grpc");
-            Unsupported(Check, "tag VLESS reality",
+            Unsupported(Check, "tag VLESS reality (bad pbk)",
                 LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&pbk=x"), "REALITY");
+            {
+                const string pbk = "q0ZjwXLc5OCk4V6-cLx3eKZYbcY3wbRW0V5yRS5pXGw";   // synthetic 32-byte key
+                var rr = LinkParser.Parse("vless://5d8a2b98-8129-4e5c-bc48-3f75e148d1a6@1.2.3.4:443?type=tcp&security=reality&sni=www.apple.com&fp=edge&pbk=" + pbk + "&sid=6ba85179e30d4fc2&spx=%2Fx#R");
+                var rp = rr.Profile;
+                Check("VLESS reality tcp SUPPORTED + fields", rr.Ok && rp != null && !rp.Unsupported && rp.Reality && rp.UseTls &&
+                      rp.RealityPublicKey == pbk && rp.RealityShortId == "6ba85179e30d4fc2" && rp.Fingerprint == "edge" &&
+                      rp.SpiderX == "/x" && rp.Sni == "www.apple.com" && rp.ToEngineConfig().Reality != null &&
+                      rp.ToEngineConfig().Reality.PublicKey.Length == 32 && rp.ToEngineConfig().Reality.ShortId.Length == 8,
+                      rr.Ok ? (rp.Unsupported ? "tagged: " + rp.UnsupportedReason : "reality=" + rp.Reality) : rr.Error);
+                Unsupported(Check, "tag VLESS reality + vision",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&flow=xtls-rprx-vision&pbk=" + pbk), "XTLS");
+                Unsupported(Check, "tag VLESS reality over xhttp",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=xhttp&security=reality&pbk=" + pbk), "xhttp");
+                Unsupported(Check, "tag VLESS reality bad sid",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&sid=xyz&pbk=" + pbk), "short id");
+            }
             Unsupported(Check, "tag VLESS xtls flow",
                 LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&flow=xtls-rprx-vision"), "XTLS");
             {

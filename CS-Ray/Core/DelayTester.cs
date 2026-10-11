@@ -133,7 +133,7 @@ namespace CS_Ray.Core
                     if (xhttp) o = new XhttpTransport(cfg.Sni, cfg.AllowInsecure, cfg.WsPath, hostHdr);
                     else
                     {
-                        o = cfg.UseTls ? TlsTransportFactory.Create(cfg.Sni, cfg.AllowInsecure) : new TcpTransport(); // security=none → plain
+                        o = TlsTransportFactory.CreateVlessSecurity(cfg); // REALITY / TLS / security=none → plain
                         if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr);
                         else if (HttpHeader(cfg)) o = new HttpHeaderTransport(o, cfg.WsHost, cfg.WsPath);
                     }

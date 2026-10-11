@@ -30,6 +30,7 @@ namespace CS_Ray.Core
         public string WsPath = "/";    // WebSocket request path (network=ws)
         public string WsHost;          // WebSocket Host header (network=ws); defaults to Sni ?? ServerHost
         public string HeaderType;      // tcp header camouflage: "http" (WsHost/WsPath = host/path lists) or null
+        public Transport.Tls13.RealityConfig Reality; // security=reality (tcp only): replaces TLS — null otherwise
 
         // Shadowsocks (AEAD over raw TCP, no TLS)
         public string SsMethod = "chacha20-ietf-poly1305";
@@ -120,6 +121,10 @@ namespace CS_Ray.Core
                 Log?.Invoke("Outbound: " + _protocol.ToUpperInvariant() + " proxy to " + _config.ServerHost + ":" + _config.ServerPort +
                             (string.IsNullOrEmpty(_config.ProxyUser) ? "" : " (auth)") +
                             " — TCP-carry only (DNS via engine; non-DNS UDP → TCP fallback).");
+            else if (_config.Reality != null)
+                Log?.Invoke("Outbound: VLESS over REALITY to " + _config.ServerHost + ":" + _config.ServerPort +
+                            " (SNI=" + _config.Reality.ServerName + ", fp=" + (string.IsNullOrEmpty(_config.Reality.Fingerprint) ? "chrome" : _config.Reality.Fingerprint) +
+                            " → " + Transport.Tls13.ClientHelloBuilder.ProfileFor(_config.Reality.Fingerprint) + " hello)");
             else
                 Log?.Invoke("Outbound: VLESS network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") +
                             (IsHttpHeader ? "+http-header" : "") + (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
@@ -187,7 +192,7 @@ namespace CS_Ray.Core
                 outbound = new XhttpTransport(_config.Sni, _config.AllowInsecure, _config.WsPath, WsHostHeader, Verbose ? Log : null);
             else
             {
-                outbound = _config.UseTls ? TlsTransportFactory.Create(_config.Sni, _config.AllowInsecure) : new TcpTransport();
+                outbound = TlsTransportFactory.CreateVlessSecurity(_config);
                 if (IsHttpHeader) outbound = new HttpHeaderTransport(outbound, _config.WsHost, _config.WsPath);
                 if (IsWebSocket)
                     outbound = new WebSocketTransport(outbound, _config.WsPath, WsHostHeader);

@@ -207,7 +207,14 @@ namespace CS_Ray.Core.Config
                     p.Protocol = "vless"; p.Uuid = Get(kv, "uuid");
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
                     string flow = Get(kv, "flow");
-                    reason = reality ? "REALITY — needs native core, unsupported"
+                    p.Flow = flow.Length > 0 ? flow : null;
+                    if (reality)
+                    {
+                        // reality-opts: { public-key, short-id } — the flat block parse sees the nested keys too.
+                        p.Reality = true; p.RealityPublicKey = Get(kv, "public-key"); p.RealityShortId = Get(kv, "short-id");
+                        p.Fingerprint = Get(kv, "client-fingerprint");
+                    }
+                    reason = reality ? RealityReason(p, rawNet, flow)
                            : flow.Length > 0 ? "XTLS flow '" + flow + "' — unsupported"
                            : TransportReason(rawNet);
                     break;
@@ -230,6 +237,14 @@ namespace CS_Ray.Core.Config
         }
 
         // Transport (network) → unsupported reason for the managed engine (null = supported tcp/ws).
+        // VLESS + REALITY: same rules as share links (tcp only, no flow yet, valid pbk/sid).
+        private static string RealityReason(ProxyProfile p, string rawNet, string flow)
+        {
+            string n = (rawNet ?? "").ToLowerInvariant();
+            string type = n == "" || n == "raw" ? "tcp" : n == "splithttp" ? "xhttp" : n;
+            return LinkParser.UnsupportedReason(type, "reality", flow, allowXhttp: true, allowReality: true) ?? LinkParser.RealityParamsReason(p);
+        }
+
         private static string TransportReason(string rawNet)
         {
             string n = (rawNet ?? "").ToLowerInvariant();
@@ -301,7 +316,15 @@ namespace CS_Ray.Core.Config
                 case "vless":
                     p.Protocol = "vless"; p.Uuid = JStr(d, "uuid");
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
-                    reason = reality ? "REALITY — needs native core, unsupported"
+                    p.Flow = flow.Length > 0 ? flow : null;
+                    if (reality)
+                    {
+                        var ro = JObj(tls, "reality");
+                        var utls = JObj(tls, "utls");
+                        p.Reality = true; p.RealityPublicKey = JStr(ro, "public_key"); p.RealityShortId = JStr(ro, "short_id");
+                        p.Fingerprint = utls != null ? JStr(utls, "fingerprint") : null;
+                    }
+                    reason = reality ? RealityReason(p, rawNet, flow)
                            : flow.Length > 0 ? "XTLS flow '" + flow + "' — unsupported"
                            : TransportReason(rawNet);
                     break;

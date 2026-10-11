@@ -112,12 +112,22 @@ namespace CS_Ray.Core.Config
             p.Network = type; // keep the real transport for display even when unsupported
             var security = (Get(q, "security") ?? "").ToLowerInvariant();
             var flow = Get(q, "flow");
+            p.Flow = string.IsNullOrEmpty(flow) ? null : flow;
             p.UseTls = security == "tls" || security == "reality";
+            if (security == "reality")
+            {
+                p.Reality = true;
+                p.RealityPublicKey = Get(q, "pbk");
+                p.RealityShortId = Get(q, "sid");
+                p.Fingerprint = Get(q, "fp");
+                p.SpiderX = Get(q, "spx");
+            }
             if (type == "tcp" && string.Equals(Get(q, "headerType"), "http", StringComparison.OrdinalIgnoreCase))
                 p.HeaderType = "http";   // tcp http-header camouflage (host= / path= are its Host / path lists)
             if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
-            string reason = UnsupportedReason(type, security, flow, allowXhttp: true); // VLESS supports xhttp (packet-up)
+            string reason = UnsupportedReason(type, security, flow, allowXhttp: true, allowReality: true) // VLESS: xhttp (packet-up), REALITY (tcp)
+                         ?? RealityParamsReason(p);
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
         }
 
@@ -134,9 +144,15 @@ namespace CS_Ray.Core.Config
 
         // Recognized-but-unsupported reason for a vless/vmess transport+security combo (null = supported).
         // VLESS supports xhttp over TLS (packet-up); VMess does not (engine VMess is raw-TCP only).
-        private static string UnsupportedReason(string type, string security, string flow, bool allowXhttp)
+        internal static string UnsupportedReason(string type, string security, string flow, bool allowXhttp, bool allowReality)
         {
-            if (security == "reality") return "REALITY — needs native core, unsupported";
+            if (security == "reality")
+            {
+                if (!allowReality) return "REALITY (VMess) — unsupported (VLESS only)";
+                if (!string.IsNullOrEmpty(flow)) return "REALITY + XTLS flow '" + flow + "' — not supported yet";
+                if (type != "tcp") return "REALITY over '" + type + "' — not supported yet (tcp only)";
+                return null;
+            }
             if (!string.IsNullOrEmpty(flow)) return "XTLS flow '" + flow + "' — unsupported";
             if (type == "xhttp")
             {
@@ -144,6 +160,15 @@ namespace CS_Ray.Core.Config
                 return security == "tls" ? null : "XHTTP requires TLS — unsupported";
             }
             if (type != "tcp" && type != "ws") return "'" + type + "' transport — unsupported (only tcp/ws)";
+            return null;
+        }
+
+        /// <summary>A REALITY profile needs a usable server key and short id (null = fine or not REALITY).</summary>
+        internal static string RealityParamsReason(ProxyProfile p)
+        {
+            if (!p.Reality) return null;
+            if (Transport.Tls13.RealityConfig.ParsePublicKey(p.RealityPublicKey) == null) return "REALITY link without a valid public key (pbk)";
+            if (Transport.Tls13.RealityConfig.ParseShortId(p.RealityShortId) == null) return "REALITY short id (sid) must be 0–16 hex characters";
             return null;
         }
 
@@ -177,7 +202,7 @@ namespace CS_Ray.Core.Config
             };
             if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
-            string reason = aid > 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported" : UnsupportedReason(net, tls, null, allowXhttp: false);
+            string reason = aid > 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported" : UnsupportedReason(net, tls, null, allowXhttp: false, allowReality: false);
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
         }
 

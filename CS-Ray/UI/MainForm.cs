@@ -1927,7 +1927,8 @@ namespace CS_Ray.UI
                 Log("Engine started: " + LabelOf(p) + " (" + config.Protocol + ") on 127.0.0.1:" + _activeListenPort + ".");
                 string proto = (config.Protocol ?? "").Trim().ToLowerInvariant();
                 bool xh = string.Equals(config.Network, "xhttp", StringComparison.OrdinalIgnoreCase);
-                if ((proto == "vless" && (config.UseTls || xh)) || proto == "https") Log("TLS engine: " + TlsEngineLabel() + ".");
+                if (proto == "vless" && config.Reality != null) Log("Security: REALITY (built-in TLS 1.3 client, independent of the TLS engine setting).");
+                else if ((proto == "vless" && (config.UseTls || xh)) || proto == "https") Log("TLS engine: " + TlsEngineLabel() + ".");
                 else if (proto == "vless") Log("Security: none (plain VLESS — no TLS).");
                 UpdateEngineDeps();
             }

@@ -23,5 +23,12 @@ namespace CS_Ray.Core.Transport
             => _engine == TlsEngine.BouncyCastle
                 ? (ITransport)new BcTlsTransport(sni, allowInsecure)
                 : new TlsTransport(sni, allowInsecure);
+
+        /// <summary>The security layer a VLESS tcp/ws outbound sits on: REALITY, TLS (security=tls) or plain TCP
+        /// (security=none). One place, so the engine, delay test and UDP sessions can't disagree.</summary>
+        public static ITransport CreateVlessSecurity(VlessConfig c)
+            => c.Reality != null ? new Tls13.Tls13Transport(c.Reality)
+             : c.UseTls ? Create(c.Sni, c.AllowInsecure)
+             : (ITransport)new TcpTransport();
     }
 }
