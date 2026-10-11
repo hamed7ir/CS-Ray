@@ -12,8 +12,9 @@ and that constraint shapes everything below. Please read before opening a PR.
   msbuild CS-Ray.sln /t:Build /p:Configuration=Debug
   ```
 - Project is .NET Framework **4.7**, **C# 7.3**, WinForms, **AnyCPU + Prefer32Bit**.
-- TUN mode needs the `wintun/<arch>/wintun.dll` folder beside the built `CS-Ray.exe`, and the
-  app must be **run as Administrator** to exercise it.
+- TUN mode needs the `wintun/<arch>/wintun.dll` folder beside the built `CS-Ray.exe`. The app runs
+  **un-elevated** (`asInvoker`); starting TUN triggers a UAC prompt and self-relaunches elevated, so don't
+  pre-launch as admin — just click **Start TUN** and accept the prompt.
 
 ## Working discipline
 
