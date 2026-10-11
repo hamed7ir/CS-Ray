@@ -23,8 +23,8 @@ namespace CS_Ray.UI
         private Color _accent;
         private Panel _content;            // all existing controls live here, below the Material title bar
         // Bottom-bar primary controls.
-        private readonly CheckBox _chkSystemProxy;
-        private readonly CheckBox _chkRouteAll;      // Full-tunnel toggle (read by OnTunClick)
+        private readonly ToggleSwitch _chkSystemProxy; // System-proxy on/off (field name kept; now an owner-drawn toggle)
+        private readonly ToggleSwitch _chkRouteAll;    // Full-tunnel intent toggle (read by OnTunClick)
         private readonly Button _btnEngine;          // combined Start/Stop engine
         private readonly Button _btnTun;             // combined Start/Stop TUN
         private readonly Button _btnTest;
@@ -41,10 +41,9 @@ namespace CS_Ray.UI
         private readonly Button _btnHamburger;       // ☰ → dropdown menu
         private SettingsPopup _settings;             // lazy; hosts the relocated controls
 
-        // Tray + window/app icons.
+        // Tray + window/app icons (loaded/cached by IconHelper; the tray icon is resolved from the mode state).
         private NotifyIcon _notifyIcon;
         private ContextMenuStrip _trayMenu;
-        private Icon _iconOff, _iconOn;              // favicon.ico / favicon-on.ico (engine running)
         private bool _reallyClosing;                 // true = real quit (Exit); ✕ otherwise hides to tray
         private ThemedScrollBar _logScroll, _listScroll;
         private Font _rowFont, _rowFontBold;         // server-list row fonts (kept private — MaterialSkin reassigns Control.Font)
@@ -55,8 +54,13 @@ namespace CS_Ray.UI
 
         // Settings → General tab (created + wired here; re-homed into the popup page). Non-readonly because
         // they're built in BuildSettingsControls().
-        private CheckBox _chkVerbose;
-        private CheckBox _chkBlockQuic;
+        private ToggleSwitch _chkVerbose;
+        private ToggleSwitch _chkBlockQuic;
+        private ToggleSwitch _chkStartup;
+        private bool _syncingStartup;        // guards programmatic _chkStartup.Checked writes from the toggle handler
+
+        /// <summary>Set by Program when launched with --startup (HKCU Run-key login) → start minimized to the tray.</summary>
+        public bool StartInTray { get; set; }
         private ComboBox _cboDnsResolver;
         private TextBox _txtLink;
         private Button _btnAdd;
@@ -122,16 +126,15 @@ namespace CS_Ray.UI
             _skin.AddFormToManage(this);
             ApplyTheme();
 
-            // App/window icon (favicon.ico); favicon-on.ico is swapped onto the tray while the engine runs.
-            _iconOff = LoadIcon("favicon.ico");
-            _iconOn = LoadIcon("favicon-on.ico");
-            if (_iconOff != null) Icon = _iconOff;
+            // App/window icon = icon.ico (shared by every form via IconHelper). The tray icon reflects the current
+            // mode (idle / system-proxy / full-tunnel) — see ResolveTrayIcon.
+            if (IconHelper.App != null) Icon = IconHelper.App;
 
             AutoScaleMode = AutoScaleMode.Font;
             Font = FontHelper.Ui(9f);
             Text = "CS-Ray";
-            ClientSize = new Size(560, 720);
-            MinimumSize = new Size(480, 560);
+            ClientSize = new Size(620, 720);
+            MinimumSize = new Size(560, 560);
             StartPosition = FormStartPosition.CenterScreen;
 
             // Hidden backing TabControl drives the visible group strip + ALL existing group logic.
@@ -174,23 +177,33 @@ namespace CS_Ray.UI
             // Touch sizing: ~44px-high buttons, larger Roboto on the bar so checkboxes/labels are finger-tappable.
             var bottomRegion = new Panel { Dock = DockStyle.Bottom, Height = 320 };
             var bar = new Panel { Dock = DockStyle.Top, Height = 108, Font = FontHelper.Ui(10.5f) };
-            _btnEngine = new Button { Text = "Start Engine", Left = 8, Top = 8, Width = 128, Height = 44 };
+            _btnEngine = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Start Engine", Left = 8, Top = 8, Width = 128, Height = 44 };
             _btnEngine.Click += OnEngineToggle;
-            _btnTun = new Button { Text = "Start TUN", Left = 144, Top = 8, Width = 110, Height = 44 };
+            _btnTun = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Start TUN", Left = 144, Top = 8, Width = 110, Height = 44 };
             _btnTun.Click += OnTunClick;
-            _chkSystemProxy = new CheckBox { Text = "System proxy", Left = 264, Top = 18, AutoSize = true };
+            // Full tunnel + System proxy: two toggle rows STACKED vertically on the right of the bar (label + slider,
+            // one below the other — no longer side-by-side checkboxes). Same bound behavior as before.
+            // AutoSize labels so the full text ("System proxy") never clips (a fixed width did — and it scales with
+            // DPI); the toggles sit in an aligned column to their right.
+            var lblFullTunnel = new Label { Text = "Full tunnel", Left = 392, Top = 16, AutoSize = true, Font = FontHelper.Ui(9.5f) };
+            _chkRouteAll = new ToggleSwitch { Left = 492, Top = 13 };
+            lblFullTunnel.Click += (s, e) => _chkRouteAll.Checked = !_chkRouteAll.Checked;
+            var lblSysProxy = new Label { Text = "System proxy", Left = 392, Top = 52, AutoSize = true, Font = FontHelper.Ui(9.5f) };
+            _chkSystemProxy = new ToggleSwitch { Left = 492, Top = 49 };
             _chkSystemProxy.CheckedChanged += OnSystemProxyToggle;
-            _chkRouteAll = new CheckBox { Text = "Full tunnel", Left = 400, Top = 18, AutoSize = true };
-            _btnTest = new Button { Text = "Test", Left = 8, Top = 58, Width = 84, Height = 42 };
+            lblSysProxy.Click += (s, e) => _chkSystemProxy.Checked = !_chkSystemProxy.Checked;
+            _btnTest = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Test", Left = 8, Top = 58, Width = 84, Height = 42 };
             _btnTest.Click += OnTestClick;
-            _btnTestAll = new Button { Text = "Test All", Left = 98, Top = 58, Width = 92, Height = 42 };
+            _btnTestAll = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Test All", Left = 98, Top = 58, Width = 92, Height = 42 };
             _btnTestAll.Click += OnTestAllClick;
-            _btnRemove = new Button { Text = "Remove", Left = 196, Top = 58, Width = 92, Height = 42 };
+            _btnRemove = new RoundedButton { Kind = RoundedButtonKind.Danger, Text = "Remove", Left = 196, Top = 58, Width = 92, Height = 42 };
             _btnRemove.Click += OnRemoveProfile;
-            _btnClearLog = new Button { Text = "Clear log", Left = 294, Top = 58, Width = 92, Height = 42 };
+            _btnClearLog = new RoundedButton { Kind = RoundedButtonKind.Neutral, Text = "Clear log", Left = 294, Top = 58, Width = 92, Height = 42 };
             _btnClearLog.Click += (s, e) => _txtLog.Clear();
-            _lblSlow = new Label { Text = "[SLOW MODE]", ForeColor = Color.Firebrick, Left = 396, Top = 70, AutoSize = true, Visible = false };
-            bar.Controls.Add(_btnEngine); bar.Controls.Add(_btnTun); bar.Controls.Add(_chkSystemProxy); bar.Controls.Add(_chkRouteAll);
+            _lblSlow = new Label { Text = "[SLOW MODE]", ForeColor = Color.Firebrick, Left = 392, Top = 84, AutoSize = true, Visible = false };
+            bar.Controls.Add(_btnEngine); bar.Controls.Add(_btnTun);
+            bar.Controls.Add(lblFullTunnel); bar.Controls.Add(_chkRouteAll);
+            bar.Controls.Add(lblSysProxy); bar.Controls.Add(_chkSystemProxy);
             bar.Controls.Add(_btnTest); bar.Controls.Add(_btnTestAll); bar.Controls.Add(_btnRemove); bar.Controls.Add(_btnClearLog); bar.Controls.Add(_lblSlow);
 
             _txtLog = new TextBox
@@ -233,7 +246,8 @@ namespace CS_Ray.UI
             SetupTray();
 
             Shown += (s, e) => PreloadTun(); // create the adapter up front (if elevated) so Start-TUN is instant
-            Shown += (s, e) => WarnIfConflicts(true); // leak-safety: warn about other proxy/VPN apps at startup
+            Shown += (s, e) => WarnIfConflicts(!StartInTray); // leak-safety warn; quiet (log-only) on a --startup tray launch
+            Shown += (s, e) => { if (StartInTray) HideToTray(); }; // --startup (login): start minimized to the tray
         }
 
         // Create the controls that live in the settings popup (wired to their existing handlers). They have no
@@ -241,21 +255,26 @@ namespace CS_Ray.UI
         private void BuildSettingsControls()
         {
             // ── General tab ──
-            _btnAddServer = new Button { Text = "Add Server…", Width = 130, Height = 28 };
+            _btnAddServer = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Add Server…", Width = 130, Height = 28 };
             _btnAddServer.Click += OnAddServerClick;
 
             _txtLink = new TextBox { Width = 380 };
-            _btnAdd = new Button { Text = "Add from link", Width = 120, Height = 26 };
+            _btnAdd = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Add from link", Width = 120, Height = 26 };
             _btnAdd.Click += OnAddFromLink;
 
-            _chkBlockQuic = new CheckBox { Text = "Block QUIC (UDP 443) — optional; QUIC tunnels by default", AutoSize = true };
+            _chkBlockQuic = new ToggleSwitch();
             _chkBlockQuic.CheckedChanged += (s, e) =>
             {
                 Core.Tun.PacketFilter.BlockQuic = _chkBlockQuic.Checked;
                 _store.BlockQuic = _chkBlockQuic.Checked; _store.Save();   // FIX 1: persist
                 Log("QUIC block: " + (_chkBlockQuic.Checked ? "ON" : "OFF"));
             };
-            _chkVerbose = new CheckBox { Text = "Verbose log", AutoSize = true };
+            _chkVerbose = new ToggleSwitch();
+
+            // START-AT-LOGIN (Part 3): HKCU Run-key toggle; the REGISTRY is the source of truth (read back into Checked).
+            _chkStartup = new ToggleSwitch();
+            _syncingStartup = true; _chkStartup.Checked = StartupIsEnabled(); _syncingStartup = false;
+            _chkStartup.CheckedChanged += OnStartupToggle;
 
             _cboDnsResolver = new ComboBox { Width = 130, DropDownStyle = ComboBoxStyle.DropDown };
             _cboDnsResolver.Items.AddRange(new object[] { "8.8.8.8", "1.1.1.1", "9.9.9.9" });
@@ -264,38 +283,118 @@ namespace CS_Ray.UI
 
             _txtTestUrl = new TextBox { Width = 360 };
             _txtTunTestIp = new TextBox { Width = 200 };
-            _btnUdpTest = new Button { Text = "UDP test (E1)", Width = 130, Height = 26 };
+            _btnUdpTest = new RoundedButton { Kind = RoundedButtonKind.Neutral, Text = "UDP test (E1)", Width = 130, Height = 26 };
             _btnUdpTest.Click += OnUdpSelfTestClick;
 
             // ── Subscriptions tab ──
             _txtSubUrl = new TextBox { Width = 334 };
-            _btnAddSub = new Button { Text = "Add", Width = 90, Height = 26 };
+            _btnAddSub = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Add", Width = 90, Height = 26 };
             _btnAddSub.Click += OnAddSub;
             _listSubs = new ListBox { Width = 552, Height = 300, IntegralHeight = false };
             _listSubs.DoubleClick += OnSubRowEdit;
-            _btnSubUpdate = new Button { Text = "Update", Width = 100, Height = 28 }; _btnSubUpdate.Click += OnSubRowUpdate;
-            _btnSubEdit = new Button { Text = "Edit…", Width = 100, Height = 28 }; _btnSubEdit.Click += OnSubRowEdit;
-            _btnSubDelete = new Button { Text = "Delete", Width = 100, Height = 28 }; _btnSubDelete.Click += OnSubRowDelete;
+            _btnSubUpdate = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Update", Width = 100, Height = 28 }; _btnSubUpdate.Click += OnSubRowUpdate;
+            _btnSubEdit = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Edit…", Width = 100, Height = 28 }; _btnSubEdit.Click += OnSubRowEdit;
+            _btnSubDelete = new RoundedButton { Kind = RoundedButtonKind.Danger, Text = "Delete", Width = 100, Height = 28 }; _btnSubDelete.Click += OnSubRowDelete;
         }
 
-        // FIX 2: ☰ now opens a TelegArm-style themed dropdown menu (not a popup).
-        private void OnHamburgerClick(object sender, EventArgs e) => ShowHamburgerMenu(_btnHamburger);
+        // ── ☰ side DRAWER (TelegArm-style; replaces the old dropdown). A card-width owner-drawn overlay on the left
+        // of the content, closed on an outside tap by a pre-dispatch message filter — no full-window snapshot/scrim. ──
+        private DrawerMenu _drawer;
+        private DrawerOutsideCloser _drawerCloser;
 
-        private void ShowHamburgerMenu(Control anchor)
+        private void OnHamburgerClick(object sender, EventArgs e) => ShowDrawer();
+
+        private void ShowDrawer()
         {
-            var menu = new ThemedContextMenuStrip();
-            // Actions deferred via BeginInvoke (inside AddMenuItem) so the menu fully closes before any dialog opens.
-            AddMenuItem(menu, "➕   Add Server…", () => OnAddServerClick(this, EventArgs.Empty));
-            AddMenuItem(menu, "📋   Add link from clipboard", OnAddFromClipboard);
-            AddMenuItem(menu, "⟳   Update All Subscriptions", () => OnUpdateAll(this, EventArgs.Empty));
-            menu.Items.Add(new ToolStripSeparator());
-            AddMenuItem(menu, "⚙   Settings", OpenSettings);
-            AddThemeSubmenu(menu);
-            AddMenuItem(menu, "ℹ   About", ShowAbout);
-            menu.Items.Add(new ToolStripSeparator());
-            AddMenuItem(menu, "⏻   Exit", ExitApp); // graceful — runs the normal teardown (no stale routes)
-            menu.Closed += (s, e) => BeginInvoke((Action)menu.Dispose);
-            menu.Show(anchor, new Point(0, anchor.Height));
+            if (_drawer != null) { CloseDrawer(); return; } // ☰ again → close (toggle)
+
+            string sub = _engine != null && _activeConfig != null && !string.IsNullOrEmpty(_activeConfig.ServerHost)
+                ? "Connected · " + _activeConfig.ServerHost
+                : "Not connected";
+            string themeName = ThemeHelper.Mode == ThemeMode.System ? "System" : ThemeHelper.Mode == ThemeMode.Light ? "Light" : "Dark";
+
+            var rows = new System.Collections.Generic.List<DrawerMenu.Row>
+            {
+                DrawerRow("➕", "Add Server…", () => OnAddServerClick(this, EventArgs.Empty)),
+                DrawerRow("📋", "Add link from clipboard", OnAddFromClipboard),
+                DrawerRow("⟳", "Update All Subscriptions", () => OnUpdateAll(this, EventArgs.Empty)),
+                DrawerSep(),
+                DrawerRow("⚙", "Settings", OpenSettings),
+                DrawerVal("🎨", "Theme", themeName, CycleTheme),
+                DrawerRow("ℹ", "About", ShowAbout),
+                DrawerSep(),
+                DrawerDanger("⏻", "Exit", ExitApp),
+            };
+
+            _drawer = new DrawerMenu(ThemeHelper.IsDark, ThemeHelper.GetWindowsAccentColor(), "CS-Ray", sub, rows)
+            {
+                Bounds = new Rectangle(0, 0, DrawerMenu.CardW, _content.ClientSize.Height)
+            };
+            _drawer.CloseRequested += () => BeginInvoke((Action)CloseDrawer);
+            _content.Controls.Add(_drawer);
+            _drawer.BringToFront();
+            _drawer.Focus();
+
+            // The narrow drawer can't catch outside taps itself — a pre-dispatch filter closes it on any down that
+            // isn't on the drawer or the hamburger.
+            if (_drawerCloser == null) { _drawerCloser = new DrawerOutsideCloser(this); Application.AddMessageFilter(_drawerCloser); }
+        }
+
+        private void CloseDrawer()
+        {
+            if (_drawerCloser != null) { try { Application.RemoveMessageFilter(_drawerCloser); } catch { } _drawerCloser = null; }
+            var d = _drawer;
+            if (d == null) return;
+            _drawer = null;
+            try { _content.Controls.Remove(d); d.Dispose(); } catch { }
+        }
+
+        // Each drawer action closes the drawer first (deferred a tick so the tap fully finishes), then runs.
+        private Action WrapDrawer(Action action) => () => BeginInvoke((Action)(() => { CloseDrawer(); action?.Invoke(); }));
+        private DrawerMenu.Row DrawerRow(string glyph, string label, Action action)
+            => new DrawerMenu.Row { Glyph = glyph, Label = label, Action = WrapDrawer(action) };
+        private DrawerMenu.Row DrawerVal(string glyph, string label, string value, Action action)
+            => new DrawerMenu.Row { Glyph = glyph, Label = label, Value = value, Action = WrapDrawer(action) };
+        private DrawerMenu.Row DrawerDanger(string glyph, string label, Action action)
+            => new DrawerMenu.Row { Glyph = glyph, Label = label, IsDanger = true, Action = WrapDrawer(action) };
+        private static DrawerMenu.Row DrawerSep() => new DrawerMenu.Row { Separator = true };
+
+        // Theme row cycles System → Light → Dark (the drawer's right value shows the current mode; SetThemeMode
+        // persists + re-applies the whole UI live).
+        private void CycleTheme()
+        {
+            ThemeMode next = ThemeHelper.Mode == ThemeMode.System ? ThemeMode.Light
+                           : ThemeHelper.Mode == ThemeMode.Light ? ThemeMode.Dark : ThemeMode.System;
+            SetThemeMode(next);
+        }
+
+        // Pre-dispatch outside-tap detector for the card-width drawer: any mouse/touch DOWN not on the drawer (or the
+        // hamburger) closes it. Observe-only (returns false → never consumes the tap → safe for touch gestures).
+        private sealed class DrawerOutsideCloser : IMessageFilter
+        {
+            private const int WM_LBUTTONDOWN = 0x0201, WM_RBUTTONDOWN = 0x0204, WM_NCLBUTTONDOWN = 0x00A1,
+                              WM_POINTERDOWN = 0x0246, WM_TOUCH = 0x0240;
+            private readonly MainForm _f;
+            public DrawerOutsideCloser(MainForm f) { _f = f; }
+            public bool PreFilterMessage(ref Message m)
+            {
+                switch (m.Msg)
+                {
+                    case WM_LBUTTONDOWN:
+                    case WM_RBUTTONDOWN:
+                    case WM_NCLBUTTONDOWN:
+                    case WM_POINTERDOWN:
+                    case WM_TOUCH:
+                        var d = _f._drawer;
+                        if (d != null && !_f.IsDisposed && m.HWnd != d.Handle
+                            && (_f._btnHamburger == null || m.HWnd != _f._btnHamburger.Handle))
+                        {
+                            try { _f.BeginInvoke((Action)_f.CloseDrawer); } catch { }
+                        }
+                        break;
+                }
+                return false; // observe only
+            }
         }
 
         private void AddMenuItem(ContextMenuStrip menu, string text, Action action)
@@ -303,31 +402,6 @@ namespace CS_Ray.UI
             var item = new ToolStripMenuItem(text) { Font = FontHelper.Ui(9.5f) };
             item.Click += (s, e) => BeginInvoke(action);
             menu.Items.Add(item);
-        }
-
-        // Theme ▸ submenu: Follow system / Light / Dark with a checkmark on the active mode; persists + applies live.
-        private void AddThemeSubmenu(ContextMenuStrip menu)
-        {
-            var parent = new ToolStripMenuItem("🎨   Theme") { Font = FontHelper.Ui(9.5f) };
-            var choices = new[]
-            {
-                new { Label = "Follow system", Mode = ThemeMode.System },
-                new { Label = "Light", Mode = ThemeMode.Light },
-                new { Label = "Dark", Mode = ThemeMode.Dark }
-            };
-            foreach (var c in choices)
-            {
-                var captured = c.Mode;
-                var item = new ToolStripMenuItem(c.Label)
-                {
-                    Checked = ThemeHelper.Mode == captured,
-                    CheckOnClick = false,
-                    Font = FontHelper.Ui(9.5f)
-                };
-                item.Click += (s, e) => BeginInvoke((Action)(() => SetThemeMode(captured)));
-                parent.DropDownItems.Add(item);
-            }
-            menu.Items.Add(parent);
         }
 
         private void SetThemeMode(ThemeMode mode)
@@ -338,9 +412,7 @@ namespace CS_Ray.UI
 
         private void ShowAbout()
         {
-            MessageBox.Show(this,
-                "CS-Ray — managed-C# proxy client + engine.\n\nPure-managed (ARM32-safe). VLESS / VMess / Shadowsocks,\nTUN full-tunnel, subscriptions, system proxy.",
-                "About CS-Ray", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            using (var dlg = new AboutDialog()) dlg.ShowDialog(this);
         }
 
         // Clipboard add, routed by content: share link → Manual server; http(s) → subscription (+fetch).
@@ -363,50 +435,182 @@ namespace CS_Ray.UI
             else Log("Clipboard: not a recognized link (expected vless:// / vmess:// / ss:// or http(s)://).");
         }
 
+        // ── START-AT-LOGIN (Part 3) — HKCU Run key; the registry is the source of truth. Ported from TelegArm. ──
+        private void OnStartupToggle(object sender, EventArgs e)
+        {
+            if (_syncingStartup) return;
+            if (!StartupSetEnabled(_chkStartup.Checked))
+            {
+                MessageBox.Show(this, "Couldn't update the Windows startup setting — your account may not allow it.",
+                    "CS-Ray — Startup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _syncingStartup = true; _chkStartup.Checked = StartupIsEnabled(); _syncingStartup = false; // revert to the TRUE state
+                return;
+            }
+            Log("Start-at-login: " + (_chkStartup.Checked ? "ON" : "OFF") + " (HKCU Run key).");
+        }
+
+        // The HKCU Run key launches CS-Ray silently at login. This works because the app ships **asInvoker** (see
+        // app.manifest): the login launch runs UN-elevated with no UAC — it just sits in the tray (via --startup)
+        // until the user starts TUN, at which point on-demand elevation kicks in (ElevateForTun). (Under the old
+        // requireAdministrator manifest this was broken — Windows won't silently auto-launch an elevated app from
+        // Run.) The toggle writes/reads the key faithfully (registry = source of truth).
+        private const string StartupRunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string StartupValueName = "CS-Ray";
+        private static bool StartupIsEnabled()
+        {
+            try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(StartupRunKey)) return k != null && k.GetValue(StartupValueName) != null; }
+            catch { return false; }
+        }
+        private static bool StartupSetEnabled(bool on)
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(StartupRunKey, true) ?? Microsoft.Win32.Registry.CurrentUser.CreateSubKey(StartupRunKey))
+                {
+                    if (k == null) return false;
+                    if (on) k.SetValue(StartupValueName, "\"" + Application.ExecutablePath + "\" --startup");  // overwrite = self-heal a stale path
+                    else if (k.GetValue(StartupValueName) != null) k.DeleteValue(StartupValueName, false);      // idempotent
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
         private void OpenSettings()
         {
             if (_settings == null || _settings.IsDisposed) { _settings = new SettingsPopup(); LayoutSettings(_settings); }
+            _syncingStartup = true; _chkStartup.Checked = StartupIsEnabled(); _syncingStartup = false; // reflect the registry on (re)open
             RefreshSubsList();
             _settings.Open(this);
         }
 
-        // Fill the popup's General + Subscriptions pages with our (already-wired) controls. Absolute positions;
-        // the popup is fixed size so no anchors → no reparent-size pitfalls.
+        // Fill the popup's General + Subscriptions pages in TelegArm's sectioned style: accent section headers +
+        // rounded bordered cards, each a stack of rows (label [+ subtitle] left, a control right). Absolute
+        // positions inside the fixed-size scroll pages (no anchors → no reparent-size pitfalls).
         private void LayoutSettings(SettingsPopup pop)
         {
-            var g = pop.GeneralPage; int y = 14;
-            _btnAddServer.Location = new Point(16, y); g.Controls.Add(_btnAddServer);
-            AddPageLabel(g, "← add a server, or paste a vless:// / vmess:// / ss:// link:", 156, y + 5);
-            y += 38;
-            _txtLink.Location = new Point(16, y); g.Controls.Add(_txtLink);
-            _btnAdd.Location = new Point(404, y - 1); g.Controls.Add(_btnAdd);
-            y += 44;
-            _chkBlockQuic.Location = new Point(16, y); g.Controls.Add(_chkBlockQuic); y += 28;
-            _chkVerbose.Location = new Point(16, y); g.Controls.Add(_chkVerbose); y += 32;
-            AddPageLabel(g, "DNS resolver (forced for tunneled DNS):", 16, y + 4);
-            _cboDnsResolver.Location = new Point(300, y); g.Controls.Add(_cboDnsResolver); y += 34;
-            AddPageLabel(g, "Delay-test target URL:", 16, y + 4);
-            _txtTestUrl.Location = new Point(170, y); g.Controls.Add(_txtTestUrl); y += 34;
-            AddPageLabel(g, "TUN test IP (advanced; partial-capture, non-full-tunnel):", 16, y + 4);
-            y += 22;
-            _txtTunTestIp.Location = new Point(16, y); g.Controls.Add(_txtTunTestIp);
-            _btnUdpTest.Location = new Point(224, y - 1); g.Controls.Add(_btnUdpTest);
+            const int cardW = 548;
 
-            var s = pop.SubsPage; int sy = 14;
-            AddPageLabel(s, "Add subscription URL:", 16, sy + 4);
-            _txtSubUrl.Location = new Point(150, sy); s.Controls.Add(_txtSubUrl);
-            _btnAddSub.Location = new Point(492, sy - 1); s.Controls.Add(_btnAddSub);
-            sy += 40;
-            AddPageLabel(s, "Subscriptions (double-click a row to edit):", 16, sy); sy += 22;
-            _listSubs.Location = new Point(16, sy); s.Controls.Add(_listSubs);
-            sy += _listSubs.Height + 8;
-            _btnSubUpdate.Location = new Point(16, sy); s.Controls.Add(_btnSubUpdate);
-            _btnSubEdit.Location = new Point(124, sy); s.Controls.Add(_btnSubEdit);
-            _btnSubDelete.Location = new Point(232, sy); s.Controls.Add(_btnSubDelete);
+            // ── General page ──
+            var g = pop.GeneralPage; int y = 12;
+
+            y = SetSection(g, "Servers", y, cardW);
+            var serversCard = SetCard(g, y, 2, cardW); y += serversCard.Height + SetSecGap;
+            SetRowTitle(serversCard, 0, "Add a server", "Open the add / edit dialog", 130);
+            _btnAddServer.Size = new Size(104, 30); SetPlaceRight(serversCard, 0, _btnAddServer, 14);
+            _btnAdd.Size = new Size(96, 28);
+            _txtLink.SetBounds(16, SetCardPad + SetRowH + (SetRowH - 24) / 2, cardW - 16 - 96 - 14 - 8, 24); serversCard.Controls.Add(_txtLink);
+            _btnAdd.Location = new Point(cardW - 96 - 14, SetCardPad + SetRowH + (SetRowH - 28) / 2); serversCard.Controls.Add(_btnAdd);
+
+            y = SetSection(g, "Connection", y, cardW);
+            var connCard = SetCard(g, y, 3, cardW); y += connCard.Height + SetSecGap;
+            SetToggleRow(connCard, 0, "Block QUIC (UDP 443)", "Optional; QUIC tunnels by default", _chkBlockQuic);
+            SetDivider(connCard, 0);
+            SetRowTitle(connCard, 1, "DNS resolver", "Forced for tunneled DNS", 150);
+            _cboDnsResolver.Width = 120; SetPlaceRight(connCard, 1, _cboDnsResolver, 14);
+            SetDivider(connCard, 1);
+            SetRowTitle(connCard, 2, "Delay-test URL", null, 270);
+            _txtTestUrl.Width = 250; SetPlaceRight(connCard, 2, _txtTestUrl, 14);
+
+            y = SetSection(g, "Startup", y, cardW);
+            var startCard = SetCard(g, y, 1, cardW); y += startCard.Height + SetSecGap;
+            SetToggleRow(startCard, 0, "Start at login", "Launch minimized to the tray", _chkStartup);
+
+            y = SetSection(g, "Diagnostics", y, cardW);
+            var diagCard = SetCard(g, y, 2, cardW); y += diagCard.Height + SetSecGap;
+            SetToggleRow(diagCard, 0, "Verbose log", "Per-connection logging (test runs)", _chkVerbose);
+            SetDivider(diagCard, 0);
+            SetRowTitle(diagCard, 1, "TUN test IP", "Advanced; partial-capture", 220);
+            int diY = SetCardPad + SetRowH;
+            _btnUdpTest.Size = new Size(96, 28);
+            _btnUdpTest.Location = new Point(cardW - 96 - 14, diY + (SetRowH - 28) / 2); diagCard.Controls.Add(_btnUdpTest);
+            _txtTunTestIp.SetBounds(cardW - 96 - 14 - 118 - 8, diY + (SetRowH - 24) / 2, 118, 24); diagCard.Controls.Add(_txtTunTestIp);
+
+            SetSpacer(g, y);
+
+            // ── Subscriptions page ──
+            var s = pop.SubsPage; int sy = 12;
+            sy = SetSection(s, "Add subscription", sy, cardW);
+            var addCard = SetCard(s, sy, 1, cardW); sy += addCard.Height + SetSecGap;
+            _btnAddSub.Size = new Size(80, 28);
+            _txtSubUrl.SetBounds(16, SetCardPad + (SetRowH - 24) / 2, cardW - 16 - 80 - 14 - 8, 24); addCard.Controls.Add(_txtSubUrl);
+            _btnAddSub.Location = new Point(cardW - 80 - 14, SetCardPad + (SetRowH - 28) / 2); addCard.Controls.Add(_btnAddSub);
+
+            sy = SetSection(s, "Your subscriptions", sy, cardW);
+            _listSubs.SetBounds(16, sy, cardW, 232); _listSubs.BorderStyle = BorderStyle.FixedSingle; s.Controls.Add(_listSubs);
+            sy += _listSubs.Height + 10;
+            _btnSubUpdate.Size = new Size(100, 30); _btnSubUpdate.Location = new Point(16, sy); s.Controls.Add(_btnSubUpdate);
+            _btnSubEdit.Size = new Size(100, 30); _btnSubEdit.Location = new Point(124, sy); s.Controls.Add(_btnSubEdit);
+            _btnSubDelete.Size = new Size(100, 30); _btnSubDelete.Location = new Point(232, sy); s.Controls.Add(_btnSubDelete);
+            SetSpacer(s, sy + 40);
         }
 
-        private static void AddPageLabel(Control parent, string text, int x, int y)
-            => parent.Controls.Add(new Label { Text = text, Left = x, Top = y, AutoSize = true });
+        // ── Settings sectioned-layout helpers (accent section header + rounded bordered card of rows) ──
+        private const int SetCardX = 16, SetRowH = 46, SetCardPad = 6, SetSecGap = 14, SetSecLabelH = 22;
+
+        private int SetSection(Control page, string text, int y, int cardW)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = text.ToUpperInvariant(), Location = new Point(SetCardX + 2, y + 4), AutoSize = false,
+                Size = new Size(cardW, SetSecLabelH), Tag = "accent", ForeColor = ThemeHelper.GetWindowsAccentColor(),
+                BackColor = Color.Transparent, Font = FontHelper.Ui(8.25f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft
+            });
+            return y + SetSecLabelH + 4;
+        }
+
+        private Panel SetCard(Control page, int y, int rows, int cardW)
+        {
+            int h = rows * SetRowH + 2 * SetCardPad;
+            var card = new Panel { Location = new Point(SetCardX, y), Size = new Size(cardW, h), Tag = "card", BackColor = _dark ? Color.FromArgb(48, 48, 48) : Color.White };
+            card.Paint += (s, e) =>
+            {
+                var gr = e.Graphics; gr.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var pen = new Pen(ThemeHelper.IsDark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(224, 224, 230)))
+                using (var pth = DrawHelper.RoundedRect(new Rectangle(0, 0, card.Width - 1, card.Height - 1), 12))
+                    gr.DrawPath(pen, pth);
+            };
+            page.Controls.Add(card);
+            return card;
+        }
+
+        private void SetRowTitle(Panel card, int row, string title, string subtitle, int rightZone)
+        {
+            int iy = SetCardPad + row * SetRowH;
+            int lw = card.Width - 16 - rightZone;
+            card.Controls.Add(new Label { Text = title, Location = new Point(16, subtitle != null ? iy + 6 : iy + (SetRowH - 22) / 2), AutoSize = false, Size = new Size(lw, 22), BackColor = Color.Transparent, Font = FontHelper.Ui(10f), TextAlign = ContentAlignment.MiddleLeft });
+            if (subtitle != null)
+                card.Controls.Add(new Label { Text = subtitle, Tag = "dim", Location = new Point(16, iy + 27), AutoSize = false, Size = new Size(lw, 16), BackColor = Color.Transparent, Font = FontHelper.Ui(7.75f), TextAlign = ContentAlignment.MiddleLeft });
+        }
+
+        private void SetPlaceRight(Panel card, int row, Control ctrl, int margin)
+        {
+            int iy = SetCardPad + row * SetRowH;
+            ctrl.Location = new Point(card.Width - ctrl.Width - margin, iy + (SetRowH - ctrl.Height) / 2);
+            card.Controls.Add(ctrl); ctrl.BringToFront();
+        }
+
+        private void SetToggleRow(Panel card, int row, string title, string subtitle, ToggleSwitch sw)
+        {
+            SetRowTitle(card, row, title, subtitle, 64);
+            SetPlaceRight(card, row, sw, 16);
+            // Touch-friendly: tapping this row's label(s) flips the toggle too (the toggle handles its own click).
+            int iy = SetCardPad + row * SetRowH;
+            foreach (Control c in card.Controls)
+                if (c is Label && c.Top >= iy && c.Top < iy + SetRowH)
+                { c.Cursor = Cursors.Hand; c.Click += (s, e) => sw.Checked = !sw.Checked; }
+        }
+
+        private void SetDivider(Panel card, int row)
+        {
+            int dy = SetCardPad + (row + 1) * SetRowH;
+            card.Controls.Add(new Panel { Location = new Point(14, dy), Size = new Size(card.Width - 28, 1), Tag = "div", BackColor = _dark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(232, 232, 236) });
+        }
+
+        private void SetSpacer(Control page, int y)
+        {
+            page.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(4, SetSecGap), BackColor = Color.Transparent });
+        }
 
         // Combined engine button: start when stopped, stop when running. (Inert mid-swap — the swap drives
         // OnStart/OnStop directly; this is only the user entry point.)
@@ -431,16 +635,6 @@ namespace CS_Ray.UI
         }
 
         // ── Tray (v2rayN-style): state-driven icon, themed right-click menu, left-click restore ──
-        private static Icon LoadIcon(string name)
-        {
-            try
-            {
-                using (var s = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("CS_Ray.icon." + name))
-                    return s != null ? new Icon(s) : null;
-            }
-            catch { return null; }
-        }
-
         private void SetupTray()
         {
             if (_notifyIcon != null) return;
@@ -448,7 +642,7 @@ namespace CS_Ray.UI
             _trayMenu.Opening += (s, e) => BuildTrayMenu(_trayMenu); // rebuild each open → always LIVE state
             _notifyIcon = new NotifyIcon
             {
-                Icon = _iconOff ?? Icon,
+                Icon = ResolveTrayIcon() ?? Icon,
                 Text = "CS-Ray — stopped",
                 Visible = true,
                 ContextMenuStrip = _trayMenu
@@ -457,14 +651,27 @@ namespace CS_Ray.UI
             UpdateTray();
         }
 
-        // Icon swaps to favicon-on whenever the ENGINE is running (the meaningful "protected" signal — covers
-        // both system-proxy and TUN). [Say the word to make "on" mean only full-tunnel-up — one line here.]
+        // Single resolver for the tray icon from the CURRENT combined mode state — precedence: TUN/full-tunnel wins,
+        // then system-proxy, else idle. Reads the ACTUAL current state each call (never set blindly per-toggle) so any
+        // combination maps to exactly one icon (both on → full-tunnel; TUN off while system-proxy on → system-proxy).
+        //   1. TUN / full-tunnel ON       → icon-fulltunnel.ico   (REGARDLESS of system-proxy)
+        //   2. system-proxy ON, TUN OFF   → icon-systemproxy.ico
+        //   3. otherwise (idle)           → icon.ico
+        private Icon ResolveTrayIcon()
+        {
+            if (_tunRouting) return IconHelper.FullTunnel ?? IconHelper.App;
+            if (SystemProxy.IsApplied) return IconHelper.SystemProxy ?? IconHelper.App;
+            return IconHelper.App;
+        }
+
+        // Called on EVERY state change (engine start/stop via UpdateEngineDeps, system-proxy toggle, TUN start/stop):
+        // the ICON comes from ResolveTrayIcon; the tooltip keeps the existing engine-running/stopped behavior.
         private void UpdateTray()
         {
             if (_notifyIcon == null) return;
-            bool on = _engine != null;
-            var ico = on ? (_iconOn ?? _iconOff) : _iconOff;
+            var ico = ResolveTrayIcon();
             if (ico != null) _notifyIcon.Icon = ico;
+            bool on = _engine != null;
             string srv = _activeConfig != null ? (_activeConfig.ServerHost ?? "") : "";
             _notifyIcon.Text = Trunc(_swapInProgress ? "CS-Ray — switching…"
                 : on ? "CS-Ray — engine running: " + srv
@@ -520,6 +727,8 @@ namespace CS_Ray.UI
             SingleInstance.AllowSurfaceMessage(Handle);
         }
 
+        private const int WM_DWMCOLORIZATIONCOLORCHANGED = 0x0320; // fires on 8.1 AND 10/11 when the accent changes
+
         // A second instance broadcasts SingleInstance.ShowMessage → surface this window (restore from tray, etc.).
         protected override void WndProc(ref Message m)
         {
@@ -529,6 +738,11 @@ namespace CS_Ray.UI
                 return;
             }
             base.WndProc(ref m);
+            // Live accent follow (Part 1.2): WM_DWMCOLORIZATIONCOLORCHANGED is the reliable signal on BOTH 8.1 and
+            // 10/11 (SystemEvents' Color category is flaky on 8.1). Don't trust wParam — it's the composed
+            // colorization tint, not the picked swatch; NotifyAccentChanged RE-READS the registry, debounces ~300ms,
+            // and fans out ThemeChanged → OnSystemThemeChanged repaints the whole UI.
+            if (m.Msg == WM_DWMCOLORIZATIONCOLORCHANGED) ThemeHelper.NotifyAccentChanged();
         }
 
         // Leak-safety: warn (never kill) when another route/DNS-managing proxy app is running. Always logs; the
@@ -571,7 +785,9 @@ namespace CS_Ray.UI
             _accent = ThemeHelper.GetWindowsAccentColor();
             _skin.Theme = _dark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
             var primary = (Primary)(uint)_accent.ToArgb();   // map the Windows accent to MaterialSkin primary
-            _skin.ColorScheme = new ColorScheme(primary, primary, primary, Accent.LightBlue200, TextShade.WHITE);
+            // Singleton-trap fix: the MaterialSkin Accent slot (MaterialTextBox underline / floating hint) must be
+            // the SAME Windows accent — NOT the hardcoded Accent.LightBlue200 that any dialog re-poisoned it with.
+            _skin.ColorScheme = new ColorScheme(primary, primary, primary, (Accent)(uint)_accent.ToArgb(), TextShade.WHITE);
         }
 
         // MaterialSkin themes its own chrome + Material* controls; our plain WinForms body controls don't
@@ -602,7 +818,7 @@ namespace CS_Ray.UI
         private void PreloadTun()
         {
             if (_tun != null) return;
-            if (!IsElevated()) { Log("TUN: not elevated — adapter pre-load skipped (run as admin for instant TUN)."); return; }
+            if (!IsElevated()) { Log("TUN: running un-elevated — adapter pre-load skipped (elevation is requested on demand when you start TUN)."); return; }
             var tun = new Core.Tun.TunDevice(Log, LogFlood);
             if (tun.Start()) { tun.BeginReading(); _tun = tun; Log("TUN: adapter pre-loaded, ready."); }
         }
@@ -1215,6 +1431,9 @@ namespace CS_Ray.UI
                     Log("Start an engine profile first — Full tunnel needs a running engine.");
                     return;
                 }
+                // ON-DEMAND ELEVATION: TUN needs admin. If we're un-elevated, relaunch ourselves elevated to start
+                // TUN (hands off via the single-instance mutex). This instance stays put if the user declines UAC.
+                if (!IsElevated()) { ElevateForTun(routeAll); return; }
                 if (!EnsureTunAdapter()) return; // logged (e.g. needs administrator)
 
                 var testIp = _txtTunTestIp.Text.Trim();
@@ -1262,6 +1481,89 @@ namespace CS_Ray.UI
                 if (_tunFullTunnel) { Log("full tunnel off — direct restored."); _tunFullTunnel = false; }
                 else Log("TUN: routing stopped (adapter kept alive).");
             }
+
+            UpdateTray(); // tray icon reflects the new TUN state (full-tunnel wins over system-proxy)
+        }
+
+        // ── ON-DEMAND ELEVATION (TUN needs admin; everything else runs un-elevated) ──────────────────────────────
+        // We can't gain admin in place, so "elevate" = relaunch our own exe elevated (ShellExecute "runas") with
+        // --elevated-start-tun and the intended --profile. On success we hand off (a graceful exit stops the engine →
+        // frees 127.0.0.1:10810, then Program releases the single-instance mutex, which is the elevated instance's
+        // cue to take over). If the user DECLINES UAC we stay exactly as we are (engine/system-proxy untouched, no
+        // TUN) — never a vanished app.
+        private void ElevateForTun(bool routeAll)
+        {
+            var p = _runningProfileId != null ? _store.GetById(_runningProfileId) : SelectedProfile();
+            if (p == null) { Log("Select a server first before starting TUN."); return; }
+            _store.ActiveProfileId = p.Id; _store.Save();   // fallback source of truth for the elevated instance
+
+            string args = "--elevated-start-tun --profile \"" + p.Id + "\"";
+            if (routeAll) args += " --full-tunnel";
+            if (_chkSystemProxy.Checked) args += " --system-proxy";
+
+            var psi = new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath, args)
+            {
+                UseShellExecute = true,
+                Verb = "runas"                       // → the UAC prompt
+            };
+            try { System.Diagnostics.Process.Start(psi); }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223) // ERROR_CANCELLED
+            {
+                Log("Elevation declined — TUN/full-tunnel needs administrator. System-proxy mode still works un-elevated.");
+                MessageBox.Show(this,
+                    "Full-tunnel (TUN) mode requires administrator access.\n\nSystem-proxy mode works without it.",
+                    "CS-Ray — Administrator required", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;   // STAY: mutex still held, engine + system-proxy untouched, TUN not started
+            }
+            catch (Exception ex)
+            {
+                Log("Elevation relaunch failed: " + ex.Message);
+                MessageBox.Show(this, "Couldn't relaunch with administrator access:\n\n" + ex.Message,
+                    "CS-Ray", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;   // STAY
+            }
+
+            // UAC accepted → the elevated instance is launching and waiting on the mutex. Exit gracefully: our
+            // OnFormClosing stops the engine (frees :10810) + clears system proxy BEFORE Program's finally releases
+            // the mutex — so the port is free the instant the elevated instance takes over. We never started TUN
+            // here (un-elevated → PreloadTun skipped, _tun == null), so there are no routes/adapter to tear down.
+            Log("Relaunching with administrator access to start TUN…");
+            ExitApp();
+        }
+
+        // Elevated take-over entry (Program wires this to Shown when launched with --elevated-start-tun). Selects the
+        // server from the EXPLICIT --profile id (source of truth; ActiveProfileId is the fallback), brings the engine
+        // up, re-applies the system-proxy intent, and starts TUN. Runs elevated, so OnTunClick's IsElevated guard
+        // passes and TUN actually comes up.
+        public void ElevatedStartTun(string profileId, bool fullTunnel, bool systemProxy)
+        {
+            string id = !string.IsNullOrEmpty(profileId) ? profileId : _store.ActiveProfileId;
+            if (!string.IsNullOrEmpty(id)) SelectProfileById(id);
+
+            if (_engine == null) OnStartClick(this, EventArgs.Empty);   // bring the engine up on that server
+            if (_engine == null) { Log("Elevated start: engine didn't start — cannot start TUN."); return; }
+
+            if (systemProxy && !_chkSystemProxy.Checked) _chkSystemProxy.Checked = true; // re-apply (triggers Set)
+            _chkRouteAll.Checked = fullTunnel;
+            OnTunClick(this, EventArgs.Empty);   // elevated now → EnsureTunAdapter succeeds → TUN starts
+        }
+
+        // Rare fault path: the outgoing instance didn't release the mutex within the wait window. Come up (so the user
+        // has a working elevated app) but do NOT auto-start TUN — binding :10810 would likely fail while the old
+        // instance lingers. Tell them to exit fully and retry (they can then just click Start TUN here — already
+        // elevated, so it starts directly with no relaunch).
+        public void ShowTakeoverFailed()
+        {
+            Log("Elevation take-over: the previous instance didn't release in time — not auto-starting TUN.");
+            MessageBox.Show(this,
+                "Couldn't take over from the previous CS-Ray instance.\n\nPlease exit CS-Ray fully (tray → Exit) and retry starting TUN.",
+                "CS-Ray — Administrator", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void SelectProfileById(string id)
+        {
+            for (int i = 0; i < _listProfiles.Items.Count; i++)
+                if (_listProfiles.Items[i] is Row r && r.Profile.Id == id) { _listProfiles.SelectedIndex = i; return; }
         }
 
         private void OnRemoveProfile(object sender, EventArgs e)
@@ -1383,6 +1685,7 @@ namespace CS_Ray.UI
                 }
             }
             catch (Exception ex) { Log("System proxy toggle error: " + ex.Message); }
+            UpdateTray(); // tray icon reflects system-proxy state (unless TUN is on, which wins)
         }
 
         // E1: prove VLESS UDP round-trips (DNS to 8.8.8.8 via the server), no TUN involved. Uses the SELECTED
@@ -1572,6 +1875,7 @@ namespace CS_Ray.UI
                 HideToTray();
                 return;
             }
+            try { CloseDrawer(); } catch { } // drop the drawer's message filter if it was open at quit
             try { _logTimer?.Stop(); } catch { }
             try { _listTouch?.Dispose(); } catch { }
             try { _logTouch?.Dispose(); } catch { }

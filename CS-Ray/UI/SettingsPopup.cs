@@ -26,6 +26,7 @@ namespace CS_Ray.UI
         {
             _skin = MaterialSkinManager.Instance;
             _skin.AddFormToManage(this);
+            if (IconHelper.App != null) Icon = IconHelper.App; // window icon (taskbar / Alt-Tab)
 
             Text = "CS-Ray — Settings";            // shown in the accent action bar
             AutoScaleMode = AutoScaleMode.Font;
@@ -83,8 +84,10 @@ namespace CS_Ray.UI
         private void ApplyTheme()
         {
             _skin.Theme = ThemeHelper.IsDark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var accent = (Primary)(uint)ThemeHelper.GetWindowsAccentColor().ToArgb();
-            _skin.ColorScheme = new ColorScheme(accent, accent, accent, Accent.LightBlue200, TextShade.WHITE);
+            var win = ThemeHelper.GetWindowsAccentColor();
+            var accent = (Primary)(uint)win.ToArgb();
+            // Singleton-trap fix: the MaterialSkin Accent slot carries the SAME Windows accent, not LightBlue200.
+            _skin.ColorScheme = new ColorScheme(accent, accent, accent, (Accent)(uint)win.ToArgb(), TextShade.WHITE);
             ThemeHelper.RecolorBody(_host);
             _strip.Invalidate();
         }

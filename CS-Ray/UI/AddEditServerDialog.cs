@@ -61,9 +61,13 @@ namespace CS_Ray.UI
 
             var skin = MaterialSkinManager.Instance;
             skin.AddFormToManage(this);
+            if (IconHelper.App != null) Icon = IconHelper.App; // window icon (taskbar / Alt-Tab)
             skin.Theme = ThemeHelper.IsDark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var accent = (Primary)(uint)ThemeHelper.GetWindowsAccentColor().ToArgb();
-            skin.ColorScheme = new ColorScheme(accent, accent, accent, Accent.LightBlue200, TextShade.WHITE);
+            var win = ThemeHelper.GetWindowsAccentColor();
+            var accent = (Primary)(uint)win.ToArgb();
+            // Singleton-trap fix: the MaterialSkin Accent slot (focus underline / floating hint) carries the SAME
+            // Windows accent — NOT the hardcoded LightBlue200 that flipped the app-wide accent the moment this opened.
+            skin.ColorScheme = new ColorScheme(accent, accent, accent, (Accent)(uint)win.ToArgb(), TextShade.WHITE);
 
             Text = existing == null ? "Add Server" : "Edit Server"; // shown in the full accent action bar
             AutoScaleMode = AutoScaleMode.Font;

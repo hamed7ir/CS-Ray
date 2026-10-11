@@ -55,6 +55,26 @@ namespace CS_Ray
             return createdNew;
         }
 
+        /// <summary>
+        /// Elevation take-over acquire: waits for the OUTGOING instance to release the mutex — which it does only
+        /// AFTER stopping its engine (freeing the local inbound port) — then owns the name. Returns true once WE
+        /// created it; false if it never freed within <paramref name="timeoutMs"/> (caller must NOT proceed to bind
+        /// the port). The <see cref="Release"/> before each retry is essential: a non-owning OPEN handle would itself
+        /// keep the named object alive, so we must drop it or <c>createdNew</c> could never become true.
+        /// </summary>
+        public static bool TryAcquireWaiting(int timeoutMs)
+        {
+            int waited = 0;
+            while (true)
+            {
+                if (TryAcquire()) return true;    // createdNew → the outgoing instance released; the port is free
+                Release();                         // drop the non-owning handle (else it keeps the object alive)
+                if (waited >= timeoutMs) return false;
+                Thread.Sleep(100);
+                waited += 100;
+            }
+        }
+
         /// <summary>Ask the existing instance to bring its window to the foreground (UIPI-safe broadcast).</summary>
         public static void SignalExisting()
         {
