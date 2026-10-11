@@ -102,7 +102,7 @@ namespace CS_Ray.Core
                 {
                     bool https = proto == "https";
                     ITransport o = https
-                        ? (ITransport)new TlsTransport(string.IsNullOrEmpty(cfg.Sni) ? cfg.ServerHost : cfg.Sni, cfg.AllowInsecure)
+                        ? TlsTransportFactory.Create(string.IsNullOrEmpty(cfg.Sni) ? cfg.ServerHost : cfg.Sni, cfg.AllowInsecure)
                         : new TcpTransport();
                     holder.Outbound = o;
                     await ConnectBudgeted(o, cfg.ServerHost, cfg.ServerPort, holder).ConfigureAwait(false);
@@ -127,7 +127,7 @@ namespace CS_Ray.Core
                         : (!string.IsNullOrEmpty(cfg.Sni) ? cfg.Sni : cfg.ServerHost);
                     ITransport o;
                     if (xhttp) o = new XhttpTransport(cfg.Sni, cfg.AllowInsecure, cfg.WsPath, hostHdr);
-                    else { o = new TlsTransport(cfg.Sni, cfg.AllowInsecure); if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr); }
+                    else { o = TlsTransportFactory.Create(cfg.Sni, cfg.AllowInsecure); if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr); }
                     holder.Outbound = o;
                     await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);
                     r.ConnectMs = (int)sw.ElapsedMilliseconds;

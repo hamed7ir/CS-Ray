@@ -41,13 +41,15 @@ components.
 
 ---
 
-## Bouncy Castle (Portable.BouncyCastle)
+## Bouncy Castle (BouncyCastle.Cryptography)
 
-- **Component:** Portable.BouncyCastle (the Legion of the Bouncy Castle C#/.NET crypto APIs),
-  version 1.9.0 — used for AEAD ciphers (AES-GCM / ChaCha20-Poly1305) in Shadowsocks and VMess.
+- **Component:** BouncyCastle.Cryptography (the Legion of the Bouncy Castle C#/.NET crypto APIs),
+  version 2.7.0 (the `net461` build, shipped as `BouncyCastle.Cryptography.dll`) — used for AEAD
+  ciphers (AES-GCM / ChaCha20-Poly1305) in Shadowsocks and VMess, and for the optional managed
+  TLS 1.3 client.
 - **License:** MIT-style — the **Bouncy Castle License**, an adaptation of the MIT X11
   Consortium license.
-- **Obtained via:** NuGet (`Portable.BouncyCastle`), not vendored as source.
+- **Obtained via:** NuGet (`BouncyCastle.Cryptography`), not vendored as source.
 - **License text:** <https://www.bouncycastle.org/licence.html>
 - **Project:** <https://www.bouncycastle.org/>
 

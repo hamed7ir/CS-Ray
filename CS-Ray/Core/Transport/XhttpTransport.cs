@@ -33,7 +33,7 @@ namespace CS_Ray.Core.Transport
 
         private string _host;
         private int _port;
-        private TlsTransport _downTls;
+        private ITransport _downTls;
         private XhttpStream _stream;
 
         public XhttpTransport(string sni, bool allowInsecure, string path, string hostHeader, Action<string> log = null)
@@ -68,7 +68,7 @@ namespace CS_Ray.Core.Transport
             // response yet: the server may emit the downlink only after it sees uplink seq=0, and we send that
             // (the VLESS request header) on the first Write. Deferring the header parse to the first Read avoids
             // a deadlock of ConnectAsync against our own first POST.
-            _downTls = new TlsTransport(_sni, _allowInsecure);
+            _downTls = TlsTransportFactory.Create(_sni, _allowInsecure);
             await _downTls.ConnectAsync(host, port, ct).ConfigureAwait(false);
             var ds = _downTls.GetStream();
             string getHead = BuildHead("GET", _basePath + "/" + _sessionId, -1);
@@ -91,9 +91,9 @@ namespace CS_Ray.Core.Transport
         }
 
         // Open a fresh TLS connection for the uplink (separate from the held-open downlink).
-        internal async Task<TlsTransport> OpenUplinkTlsAsync(CancellationToken ct)
+        internal async Task<ITransport> OpenUplinkTlsAsync(CancellationToken ct)
         {
-            var up = new TlsTransport(_sni, _allowInsecure);
+            var up = TlsTransportFactory.Create(_sni, _allowInsecure);
             await up.ConnectAsync(_host, _port, ct).ConfigureAwait(false);
             return up;
         }
@@ -147,8 +147,8 @@ namespace CS_Ray.Core.Transport
         private byte[] _chunk; private int _chunkOff, _chunkLeft;
 
         private long _seq;
-        private TlsTransport _upTls;
-        private Stream _up;                       // uplink SslStream (write side, keep-alive)
+        private ITransport _upTls;
+        private Stream _up;                       // uplink TLS stream (write side, keep-alive)
 
         public XhttpStream(XhttpTransport t, Stream down, Action<string> log = null) { _t = t; _down = down; _log = log; }
 

@@ -55,6 +55,9 @@
     <Compile Include="Core\Transport\ITransport.cs" />
     <Compile Include="Core\Transport\TcpTransport.cs" />
     <Compile Include="Core\Transport\TlsTransport.cs" />
+    <Compile Include="Core\Transport\BcTlsTransport.cs" />
+    <Compile Include="Core\Transport\TlsCertificateValidator.cs" />
+    <Compile Include="Core\Transport\TlsTransportFactory.cs" />
     <Compile Include="Core\Transport\WebSocketTransport.cs" />
     <Compile Include="Core\Transport\XhttpTransport.cs" />
     <Compile Include="Core\Inbound\MixedInbound.cs" />
@@ -143,7 +146,7 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Portable.BouncyCastle" Version="1.9.0" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Fonts\Roboto-Regular.ttf" />

@@ -40,7 +40,7 @@ namespace CS_Ray.Core.Protocol
         /// <summary>Dial the server and send the VLESS UDP request header for the given destination.</summary>
         public async Task ConnectAsync(string dstHost, int dstPort, CancellationToken ct)
         {
-            ITransport outbound = new TlsTransport(_cfg.Sni, _cfg.AllowInsecure);
+            ITransport outbound = TlsTransportFactory.Create(_cfg.Sni, _cfg.AllowInsecure);
             if (IsWebSocket)
                 outbound = new WebSocketTransport(outbound, _cfg.WsPath, WsHostHeader);
 

@@ -180,7 +180,7 @@ namespace CS_Ray.Core
                 outbound = new XhttpTransport(_config.Sni, _config.AllowInsecure, _config.WsPath, WsHostHeader, Verbose ? Log : null);
             else
             {
-                outbound = new TlsTransport(_config.Sni, _config.AllowInsecure);
+                outbound = TlsTransportFactory.Create(_config.Sni, _config.AllowInsecure);
                 if (IsWebSocket)
                     outbound = new WebSocketTransport(outbound, _config.WsPath, WsHostHeader);
             }
@@ -272,7 +272,7 @@ namespace CS_Ray.Core
             var ct = _cts.Token;
             bool https = _protocol == "https";
             ITransport outbound = https
-                ? (ITransport)new TlsTransport(string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni, _config.AllowInsecure)
+                ? TlsTransportFactory.Create(string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni, _config.AllowInsecure)
                 : new TcpTransport();
             try
             {

@@ -41,7 +41,7 @@ if (-not (Test-Path $csc)) { throw "No C# compiler found (looked for Roslyn + fr
 $stage = Join-Path $env:TEMP ("csraypay_" + [Guid]::NewGuid().ToString('N'))
 New-Item $stage -ItemType Directory -Force | Out-Null
 Copy-Item "$rel\CS-Ray.exe", "$rel\CS-Ray.exe.config" $stage
-Copy-Item "$rel\*.dll" $stage                 # BouncyCastle.Crypto.dll (flat, beside the exe)
+Copy-Item "$rel\*.dll" $stage                 # BouncyCastle.Cryptography.dll (flat, beside the exe)
 Copy-Item $wintun $stage -Recurse             # wintun\<arch>\wintun.dll for all 4 archs (native loader path)
 # GPL: ship the license + third-party notices with the binaries (best-effort from the staged portable folder).
 foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.md','README.md') {

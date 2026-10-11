@@ -22,6 +22,7 @@ namespace CS_Ray.Core.Config
             public string ThemeMode { get; set; }
             public string AccentColor { get; set; }
             public bool BlockQuic { get; set; }
+            public bool UseManagedTls { get; set; }
         }
 
         public const string ManualGroup = "manual";
@@ -43,6 +44,9 @@ namespace CS_Ray.Core.Config
 
         /// <summary>Persisted Block-QUIC (UDP/443 drop) preference.</summary>
         public bool BlockQuic { get; set; }
+
+        /// <summary>Use the managed BouncyCastle TLS 1.3 engine instead of SslStream (experimental; default off).</summary>
+        public bool UseManagedTls { get; set; }
 
         /// <summary>A profile's effective group id (null/empty → Manual).</summary>
         public static string GroupOf(ProxyProfile p) => string.IsNullOrEmpty(p.Group) ? ManualGroup : p.Group;
@@ -141,6 +145,7 @@ namespace CS_Ray.Core.Config
                 ThemeMode = data?.ThemeMode;
                 AccentColor = data?.AccentColor;
                 BlockQuic = data?.BlockQuic ?? false;
+                UseManagedTls = data?.UseManagedTls ?? false;
             }
             catch
             {
@@ -162,7 +167,8 @@ namespace CS_Ray.Core.Config
                     Subscriptions = Subscriptions,
                     ThemeMode = ThemeMode,
                     AccentColor = AccentColor,
-                    BlockQuic = BlockQuic
+                    BlockQuic = BlockQuic,
+                    UseManagedTls = UseManagedTls
                 });
                 File.WriteAllText(_path, json);
             }

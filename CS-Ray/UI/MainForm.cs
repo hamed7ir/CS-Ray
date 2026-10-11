@@ -57,6 +57,7 @@ namespace CS_Ray.UI
         // Settings → General tab (created + wired here; re-homed into the popup page). Non-readonly because
         // they're built in BuildSettingsControls().
         private ToggleSwitch _chkVerbose;
+        private ToggleSwitch _chkManagedTls;     // Diagnostics: BouncyCastle TLS 1.3 engine instead of SslStream
         private ToggleSwitch _chkBlockQuic;
         private ToggleSwitch _chkStartup;
         private bool _syncingStartup;        // guards programmatic _chkStartup.Checked writes from the toggle handler
@@ -123,6 +124,8 @@ namespace CS_Ray.UI
             ThemeMode tm; if (!Enum.TryParse(_store.ThemeMode ?? "System", true, out tm)) tm = ThemeMode.System;
             ThemeHelper.InitMode(tm);
             ThemeHelper.InitAccent(ThemeHelper.ParseAccent(_store.AccentColor)); // "" / null = follow the Windows accent
+            // TLS engine for outbound security=tls (applies to every connection, incl. the elevated TUN relaunch).
+            Core.Transport.TlsTransportFactory.Engine = _store.UseManagedTls ? Core.Transport.TlsEngine.BouncyCastle : Core.Transport.TlsEngine.SslStream;
 
             // Themed chrome comes from ThemedForm (borderless accent title bar, app icon, system-DPI +
             // AutoScaleMode.Font); resolve the theme before any control reads it. The tray icon reflects the current
@@ -279,6 +282,16 @@ namespace CS_Ray.UI
                 Log("QUIC block: " + (_chkBlockQuic.Checked ? "ON" : "OFF"));
             };
             _chkVerbose = new ToggleSwitch();
+
+            // Experimental managed TLS 1.3 (BouncyCastle). Reflect the persisted choice BEFORE wiring the handler.
+            _chkManagedTls = new ToggleSwitch { Checked = _store.UseManagedTls };
+            _chkManagedTls.CheckedChanged += (s, e) =>
+            {
+                bool on = _chkManagedTls.Checked;
+                Core.Transport.TlsTransportFactory.Engine = on ? Core.Transport.TlsEngine.BouncyCastle : Core.Transport.TlsEngine.SslStream;
+                _store.UseManagedTls = on; _store.Save();
+                Log("TLS engine: " + TlsEngineLabel() + " — applies to new connections (restart the engine to switch a running one).");
+            };
 
             // START-AT-LOGIN (Part 3): HKCU Run-key toggle; the REGISTRY is the source of truth (read back into Checked).
             _chkStartup = new ToggleSwitch();
@@ -599,13 +612,15 @@ namespace CS_Ray.UI
             SetToggleRow(startCard, 0, "Start at login", "Launch minimized to the tray", _chkStartup);
 
             y = SetSection(g, "Diagnostics", y, cardW);
-            var diagCard = SetCard(g, y, 2, cardW); y += diagCard.Height + SetSecGap;
+            var diagCard = SetCard(g, y, 3, cardW); y += diagCard.Height + SetSecGap;
             SetToggleRow(diagCard, 0, "Verbose log", "Per-connection logging (test runs)", _chkVerbose);
             SetDivider(diagCard, 0);
+            SetToggleRow(diagCard, 1, "Managed TLS 1.3 (experimental)", "BouncyCastle engine instead of SslStream (TLS 1.2)", _chkManagedTls);
+            SetDivider(diagCard, 1);
             _txtTunTestIp.Width = DrawHelper.Px(130);
-            SetPlaceRight(diagCard, 1, _txtTunTestIp, m + _btnUdpTest.Width + gap); // field first → Tab order
-            SetPlaceRight(diagCard, 1, _btnUdpTest, m);
-            SetRowTitle(diagCard, 1, "TUN test IP", "Advanced; partial-capture", cardW - _txtTunTestIp.Left + gap);
+            SetPlaceRight(diagCard, 2, _txtTunTestIp, m + _btnUdpTest.Width + gap); // field first → Tab order
+            SetPlaceRight(diagCard, 2, _btnUdpTest, m);
+            SetRowTitle(diagCard, 2, "TUN test IP", "Advanced; partial-capture", cardW - _txtTunTestIp.Left + gap);
 
             SetSpacer(g, y);
 
@@ -1879,6 +1894,10 @@ namespace CS_Ray.UI
         }
 
         // Combined-button START: build the engine from the SELECTED profile (inline fields removed in C2b).
+        private static string TlsEngineLabel()
+            => Core.Transport.TlsTransportFactory.Engine == Core.Transport.TlsEngine.BouncyCastle
+                ? "managed BouncyCastle (TLS 1.3, falls back to 1.2)" : "SslStream (TLS 1.2)";
+
         private void OnStartClick(object sender, EventArgs e)
         {
             var p = SelectedProfile();
@@ -1900,6 +1919,8 @@ namespace CS_Ray.UI
                 if (_store.ActiveProfileId != p.Id) { _store.ActiveProfileId = p.Id; _store.Save(); }
                 _runningProfileId = p.Id; // the truly-active server (drives the list indicator + tray icon)
                 Log("Engine started: " + LabelOf(p) + " (" + config.Protocol + ") on 127.0.0.1:" + _activeListenPort + ".");
+                string proto = (config.Protocol ?? "").Trim().ToLowerInvariant();
+                if (proto == "vless" || proto == "https") Log("TLS engine: " + TlsEngineLabel() + ".");
                 UpdateEngineDeps();
             }
             catch (Exception ex)
