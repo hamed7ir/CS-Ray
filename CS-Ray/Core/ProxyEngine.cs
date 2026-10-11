@@ -29,6 +29,7 @@ namespace CS_Ray.Core
         public string Network = "tcp"; // "tcp" (VLESS straight over TLS) or "ws" (VLESS over WebSocket-over-TLS)
         public string WsPath = "/";    // WebSocket request path (network=ws)
         public string WsHost;          // WebSocket Host header (network=ws); defaults to Sni ?? ServerHost
+        public string HeaderType;      // tcp header camouflage: "http" (WsHost/WsPath = host/path lists) or null
 
         // Shadowsocks (AEAD over raw TCP, no TLS)
         public string SsMethod = "chacha20-ietf-poly1305";
@@ -121,7 +122,7 @@ namespace CS_Ray.Core
                             " — TCP-carry only (DNS via engine; non-DNS UDP → TCP fallback).");
             else
                 Log?.Invoke("Outbound: VLESS network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") +
-                            (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
+                            (IsHttpHeader ? "+http-header" : "") + (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
                             _config.ServerHost + ":" + _config.ServerPort +
                             (IsXhttp || _config.UseTls
                                 ? " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) + ", allowInsecure=" + _config.AllowInsecure
@@ -136,6 +137,9 @@ namespace CS_Ray.Core
             _inbound = null;
             Log?.Invoke("Engine stopped.");
         }
+
+        private bool IsHttpHeader =>
+            string.Equals(_config.HeaderType, "http", StringComparison.OrdinalIgnoreCase) && !IsWebSocket && !IsXhttp;
 
         private bool IsWebSocket =>
             string.Equals(_config.Network?.Trim(), "ws", StringComparison.OrdinalIgnoreCase);
@@ -184,6 +188,7 @@ namespace CS_Ray.Core
             else
             {
                 outbound = _config.UseTls ? TlsTransportFactory.Create(_config.Sni, _config.AllowInsecure) : new TcpTransport();
+                if (IsHttpHeader) outbound = new HttpHeaderTransport(outbound, _config.WsHost, _config.WsPath);
                 if (IsWebSocket)
                     outbound = new WebSocketTransport(outbound, _config.WsPath, WsHostHeader);
             }
@@ -206,7 +211,8 @@ namespace CS_Ray.Core
                         try { conn.Client.Close(); } catch { }
                     },
                     ct: ct,
-                    serverPreamble: c => VlessProtocol.ConsumeResponseHeaderAsync(server, c)).ConfigureAwait(false);
+                    serverPreamble: c => VlessProtocol.ConsumeResponseHeaderAsync(server, c),
+                    onError: s => Log?.Invoke("VLESS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s)).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -297,8 +303,10 @@ namespace CS_Ray.Core
         {
             var ct = _cts.Token;
 
-            // VMess AEAD over raw TCP (no TLS for this test); the VMess streams layer crypto on top.
+            // VMess AEAD over raw TCP (no TLS for this test); the VMess streams layer crypto on top. Optional tcp
+            // http-header camouflage underneath (type=http in the vmess link).
             ITransport outbound = new TcpTransport();
+            if (IsHttpHeader) outbound = new HttpHeaderTransport(outbound, _config.WsHost, _config.WsPath);
             try
             {
                 await outbound.ConnectAsync(DialHost, _config.ServerPort, ct).ConfigureAwait(false);

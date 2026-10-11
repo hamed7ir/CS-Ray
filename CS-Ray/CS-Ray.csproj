@@ -58,6 +58,7 @@
     <Compile Include="Core\Transport\BcTlsTransport.cs" />
     <Compile Include="Core\Transport\TlsCertificateValidator.cs" />
     <Compile Include="Core\Transport\TlsTransportFactory.cs" />
+    <Compile Include="Core\Transport\HttpHeaderTransport.cs" />
     <Compile Include="Core\Transport\WebSocketTransport.cs" />
     <Compile Include="Core\Transport\XhttpTransport.cs" />
     <Compile Include="Core\Inbound\MixedInbound.cs" />

@@ -25,6 +25,7 @@ namespace CS_Ray.UI
 
         private readonly ThemedComboBox _cboProtocol = NewCombo("Protocol");
         private readonly ThemedComboBox _cboNetwork = NewCombo("Network (transport)");
+        private readonly ThemedComboBox _cboHeader = NewCombo("Header (tcp camouflage)");
         private readonly ThemedComboBox _cboSsMethod = NewCombo("Encryption (SS method)");
         private readonly ThemedTextBox _txtName = NewText("Name (optional — defaults to address)");
         private readonly ThemedTextBox _txtAddress = NewText("Address (host or IP)");
@@ -33,8 +34,8 @@ namespace CS_Ray.UI
         private readonly ThemedTextBox _txtAlterId = NewText("AlterId (0 only — AEAD)");
         private readonly ThemedTextBox _txtUser = NewText("Username (optional)");
         private readonly ThemedTextBox _txtPassword = NewText("Password");
-        private readonly ThemedTextBox _txtWsHost = NewText("Host (ws/xhttp)");
-        private readonly ThemedTextBox _txtWsPath = NewText("Path (ws/xhttp)");
+        private readonly ThemedTextBox _txtWsHost = NewText("Host (ws / xhttp / http header; comma-separated for http)");
+        private readonly ThemedTextBox _txtWsPath = NewText("Path (ws / xhttp / http header)");
         private readonly ThemedTextBox _txtSni = NewText("SNI (TLS server name)");
         private readonly ToggleSwitch _swTls = new ToggleSwitch();
         private readonly ToggleSwitch _swInsecure = new ToggleSwitch();
@@ -65,9 +66,10 @@ namespace CS_Ray.UI
 
             _cboProtocol.Items.AddRange(new object[] { "vless", "vmess", "shadowsocks", "socks", "http", "https" });
             _cboNetwork.Items.AddRange(new object[] { "tcp", "ws", "xhttp" });
+            _cboHeader.Items.AddRange(new object[] { "none", "http" });
             _cboSsMethod.Items.AddRange(SsMethods);
 
-            foreach (var c in new Control[] { _cboProtocol, _cboNetwork, _cboSsMethod, _txtName, _txtAddress,
+            foreach (var c in new Control[] { _cboProtocol, _cboNetwork, _cboHeader, _cboSsMethod, _txtName, _txtAddress,
                 _txtPort, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _txtSni,
                 _lblTls, _swTls, _lblInsecure, _swInsecure, _lblError, _lblNote })
             { if (!(c is ToggleSwitch)) c.Width = FieldW; Body.Host.Controls.Add(c); } // switches keep their DPI-scaled size
@@ -85,10 +87,11 @@ namespace CS_Ray.UI
 
             _cboProtocol.SelectedIndexChanged += (s, e) => Relayout();
             _cboNetwork.SelectedIndexChanged += (s, e) => Relayout();
+            _cboHeader.SelectedIndexChanged += (s, e) => Relayout();
             _btnOk.Click += OnOk;
 
             if (existing != null) LoadFrom(existing);
-            else { _cboProtocol.SelectedIndex = 0; _cboNetwork.SelectedIndex = 0; _cboSsMethod.SelectedIndex = 0; _txtWsPath.Text = "/"; }
+            else { _cboProtocol.SelectedIndex = 0; _cboNetwork.SelectedIndex = 0; _cboHeader.SelectedIndex = 0; _cboSsMethod.SelectedIndex = 0; _txtWsPath.Text = "/"; }
 
             ApplyDialogTheme();
             Relayout();
@@ -96,6 +99,7 @@ namespace CS_Ray.UI
 
         private string Proto => (_cboProtocol.SelectedItem as string) ?? "vless";
         private string Net => (_cboNetwork.SelectedItem as string) ?? "tcp";
+        private string Hdr => (_cboHeader.SelectedItem as string) ?? "none";
 
         protected override void ApplyDialogTheme()
         {
@@ -116,6 +120,8 @@ namespace CS_Ray.UI
             bool xhttp = vlessLike && Net == "xhttp";
             bool ws = vlessLike && Net == "ws";
             bool wsOrXhttp = ws || xhttp;
+            bool tcp = vlessLike && Net == "tcp";
+            bool tcpHttp = tcp && Hdr == "http";          // tcp http-header camouflage uses Host / Path too
 
             _tabIndex = 0;
             int y = DrawHelper.Px(10);
@@ -134,8 +140,9 @@ namespace CS_Ray.UI
             Place(_txtUser, ref y, proxyLike);                 // socks/http(s): optional auth
             Place(_txtPassword, ref y, ss || proxyLike);       // SS password OR proxy password
             Place(_cboNetwork, ref y, vlessLike);
-            Place(_txtWsHost, ref y, wsOrXhttp);
-            Place(_txtWsPath, ref y, wsOrXhttp);
+            Place(_cboHeader, ref y, tcp);
+            Place(_txtWsHost, ref y, wsOrXhttp || tcpHttp);
+            Place(_txtWsPath, ref y, wsOrXhttp || tcpHttp);
             Place(_txtSni, ref y, vlessLike || https);         // vless TLS/xhttp + https-proxy TLS
             PlaceToggle(_lblTls, _swTls, ref y, vlessLike && !xhttp);   // xhttp implies TLS — hide the toggle
             PlaceToggle(_lblInsecure, _swInsecure, ref y, vlessLike || https);
@@ -231,7 +238,8 @@ namespace CS_Ray.UI
                 prof.Sni = (_txtSni.Text ?? "").Trim();
                 prof.AllowInsecure = _swInsecure.Checked;
                 prof.UseTls = (Net == "xhttp") || _swTls.Checked; // xhttp implies TLS
-                if (Net == "ws" || Net == "xhttp")
+                prof.HeaderType = Net == "tcp" && Hdr == "http" ? "http" : null;
+                if (Net == "ws" || Net == "xhttp" || prof.HeaderType == "http")
                 {
                     prof.WsPath = string.IsNullOrEmpty(_txtWsPath.Text) ? "/" : _txtWsPath.Text.Trim();
                     prof.WsHost = (_txtWsHost.Text ?? "").Trim();
@@ -250,6 +258,8 @@ namespace CS_Ray.UI
             if (_cboProtocol.SelectedIndex < 0) _cboProtocol.SelectedIndex = 0;
             _cboNetwork.SelectedItem = string.IsNullOrEmpty(p.Network) ? "tcp" : p.Network.ToLowerInvariant();
             if (_cboNetwork.SelectedIndex < 0) _cboNetwork.SelectedIndex = 0;
+            _cboHeader.SelectedItem = string.Equals(p.HeaderType, "http", StringComparison.OrdinalIgnoreCase) ? "http" : "none";
+            if (_cboHeader.SelectedIndex < 0) _cboHeader.SelectedIndex = 0;
             _cboSsMethod.SelectedItem = p.SsMethod;
             if (_cboSsMethod.SelectedIndex < 0) _cboSsMethod.SelectedIndex = 0;
 

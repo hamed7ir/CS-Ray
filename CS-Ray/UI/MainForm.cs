@@ -34,6 +34,7 @@ namespace CS_Ray.UI
         private readonly int _maxClientW;
         private readonly Label _lblFullTunnel, _lblSysProxy;
         private bool _inLayoutBar;
+        private readonly bool _vlessMigrated;        // this launch upgraded saved VLESS profiles (log a note once)
         private readonly TextBox _txtLog;
 
         // Group tabs: a hidden backing TabControl drives the visible flat strip + all existing group logic.
@@ -121,6 +122,8 @@ namespace CS_Ray.UI
         {
             // Load persisted settings (incl. theme) BEFORE any window paints — no flash. (TelegArm pattern.)
             _store.Load();
+            _vlessMigrated = _store.MigratedOnLoad;
+            if (_vlessMigrated) _store.Save();   // persist the one-time VLESS-security migration before anything reloads
             ThemeMode tm; if (!Enum.TryParse(_store.ThemeMode ?? "System", true, out tm)) tm = ThemeMode.System;
             ThemeHelper.InitMode(tm);
             ThemeHelper.InitAccent(ThemeHelper.ParseAccent(_store.AccentColor)); // "" / null = follow the Windows accent
@@ -1098,7 +1101,7 @@ namespace CS_Ray.UI
             public string Latency; // last delay-test result (e.g. "182ms" / "timeout"), shown inline
             public override string ToString()
                 => (string.IsNullOrEmpty(Profile.Name) ? Profile.Server : Profile.Name)
-                   + "  (" + Profile.Protocol + ", " + Profile.Network + ")"
+                   + "  (" + Profile.Protocol + ", " + Profile.Network + (string.Equals(Profile.HeaderType, "http", StringComparison.OrdinalIgnoreCase) && Profile.Network == "tcp" ? "+http" : "") + ")"
                    + (string.IsNullOrEmpty(Latency) ? "" : "  — " + Latency);
         }
 
@@ -1305,6 +1308,9 @@ namespace CS_Ray.UI
         private void InitProfiles()
         {
             if (!string.IsNullOrEmpty(Core.Config.ProfileStore.ResolutionInfo)) Log(Core.Config.ProfileStore.ResolutionInfo);
+            if (_vlessMigrated)
+                Log("Upgrade: VLESS servers now follow their TLS switch. Saved VLESS servers were kept on TLS (the previous behavior); "
+                    + "for a plain (security=none) server, Edit it and turn TLS off. Refreshing a subscription re-imports its correct values.");
             _store.Load();
             _txtTestUrl.Text = string.IsNullOrEmpty(_store.DelayTestUrl) ? Core.DelayTester.DefaultUrl : _store.DelayTestUrl;
             RefreshGroups();

@@ -71,6 +71,8 @@ namespace CS_Ray.Core
             return await test.ConfigureAwait(false);
         }
 
+        private static bool HttpHeader(VlessConfig cfg) => string.Equals(cfg.HeaderType, "http", StringComparison.OrdinalIgnoreCase);
+
         private static async Task<DelayResult> RunOnceAsync(VlessConfig cfg, string tHost, int tPort, string tPath, bool tHttps, Holder holder)
         {
             var r = new DelayResult();
@@ -92,7 +94,9 @@ namespace CS_Ray.Core
                 else if (proto == "vmess")
                 {
                     var uuid = VlessProtocol.ParseUuid(cfg.VmessId);
-                    var tcp = new TcpTransport(); holder.Outbound = tcp;
+                    ITransport tcp = new TcpTransport();
+                    if (HttpHeader(cfg)) tcp = new HttpHeaderTransport(tcp, cfg.WsHost, cfg.WsPath);
+                    holder.Outbound = tcp;
                     await ConnectBudgeted(tcp, cfg.ServerHost, cfg.ServerPort, holder).ConfigureAwait(false);
                     r.ConnectMs = (int)sw.ElapsedMilliseconds;
                     tunnel = await VmessProtocol.EstablishAsync(
@@ -131,6 +135,7 @@ namespace CS_Ray.Core
                     {
                         o = cfg.UseTls ? TlsTransportFactory.Create(cfg.Sni, cfg.AllowInsecure) : new TcpTransport(); // security=none → plain
                         if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr);
+                        else if (HttpHeader(cfg)) o = new HttpHeaderTransport(o, cfg.WsHost, cfg.WsPath);
                     }
                     holder.Outbound = o;
                     await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);

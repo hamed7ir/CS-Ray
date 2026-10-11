@@ -23,6 +23,7 @@ namespace CS_Ray.Core.Config
             public string AccentColor { get; set; }
             public bool BlockQuic { get; set; }
             public bool UseManagedTls { get; set; }
+            public bool VlessSecurityHonored { get; set; }
         }
 
         public const string ManualGroup = "manual";
@@ -47,6 +48,12 @@ namespace CS_Ray.Core.Config
 
         /// <summary>Use the managed BouncyCastle TLS 1.3 engine instead of SslStream (experimental; default off).</summary>
         public bool UseManagedTls { get; set; }
+
+        /// <summary>True once saved VLESS profiles were migrated to the engine honoring UseTls (see <see cref="Load"/>).</summary>
+        public bool VlessSecurityHonored { get; private set; }
+
+        /// <summary>Set by <see cref="Load"/> when it just migrated older data; the caller should Save() once.</summary>
+        public bool MigratedOnLoad { get; private set; }
 
         /// <summary>A profile's effective group id (null/empty → Manual).</summary>
         public static string GroupOf(ProxyProfile p) => string.IsNullOrEmpty(p.Group) ? ManualGroup : p.Group;
@@ -136,7 +143,8 @@ namespace CS_Ray.Core.Config
         {
             try
             {
-                if (!File.Exists(_path)) { Profiles = new List<ProxyProfile>(); ActiveProfileId = null; return; }
+                // Fresh store: nothing to migrate — new profiles are created under the honored-UseTls rules.
+                if (!File.Exists(_path)) { Profiles = new List<ProxyProfile>(); ActiveProfileId = null; VlessSecurityHonored = true; MigratedOnLoad = false; return; }
                 var data = new JavaScriptSerializer().Deserialize<StoreData>(File.ReadAllText(_path));
                 Profiles = data?.Profiles ?? new List<ProxyProfile>();
                 ActiveProfileId = data?.ActiveProfileId;
@@ -146,12 +154,26 @@ namespace CS_Ray.Core.Config
                 AccentColor = data?.AccentColor;
                 BlockQuic = data?.BlockQuic ?? false;
                 UseManagedTls = data?.UseManagedTls ?? false;
+
+                // One-time upgrade: builds before VlessSecurityHonored dialed EVERY VLESS server with TLS whatever UseTls
+                // said (Clash / sing-box subscriptions never even set it). Keep that working behavior for saved profiles —
+                // TLS on — so nothing breaks on upgrade; from now on the flag is honored as stored (a subscription refresh
+                // re-imports with the correct value; a security=none server is switched off per profile in Edit).
+                MigratedOnLoad = false;
+                VlessSecurityHonored = data?.VlessSecurityHonored ?? false;
+                if (!VlessSecurityHonored)
+                {
+                    foreach (var pr in Profiles) if (pr != null && pr.Protocol == "vless") pr.UseTls = true;
+                    VlessSecurityHonored = true;
+                    MigratedOnLoad = data != null;
+                }
             }
             catch
             {
                 Profiles = new List<ProxyProfile>();
                 ActiveProfileId = null;
                 Subscriptions = new List<Subscription>();
+                VlessSecurityHonored = true; MigratedOnLoad = false;   // starting over: nothing old to migrate
             }
         }
 
@@ -168,7 +190,8 @@ namespace CS_Ray.Core.Config
                     ThemeMode = ThemeMode,
                     AccentColor = AccentColor,
                     BlockQuic = BlockQuic,
-                    UseManagedTls = UseManagedTls
+                    UseManagedTls = UseManagedTls,
+                    VlessSecurityHonored = VlessSecurityHonored
                 });
                 File.WriteAllText(_path, json);
             }

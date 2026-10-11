@@ -190,7 +190,8 @@ namespace CS_Ray.Core.Config
             string name = First(Get(kv, "name"), server);
             bool reality = kv.ContainsKey("reality-opts");
 
-            var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure };
+            var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure,
+                                       UseTls = string.Equals(Get(kv, "tls"), "true", StringComparison.OrdinalIgnoreCase) || reality };
             string reason = null;
             switch (type)
             {
@@ -285,7 +286,8 @@ namespace CS_Ray.Core.Config
             string net = (rawNet == "tcp" || rawNet == "ws") ? rawNet : "tcp";
             string flow = JStr(d, "flow");
             string name = First(JStr(d, "tag"), server);
-            var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure };
+            var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure,
+                                       UseTls = tls != null && (JBool(tls, "enabled") || reality) };
             string reason = null;
             switch (type)
             {

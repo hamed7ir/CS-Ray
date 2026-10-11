@@ -31,8 +31,10 @@ namespace CS_Ray.Core.Protocol.Vmess
 
         public async Task ConnectAsync(string dstHost, int dstPort, CancellationToken ct)
         {
-            // VMess (this build) runs over raw TCP, same as the TCP relay path.
+            // VMess (this build) runs over raw TCP, same as the TCP relay path (+ optional http header camouflage).
             ITransport outbound = new TcpTransport();
+            if (string.Equals(_cfg.HeaderType, "http", StringComparison.OrdinalIgnoreCase))
+                outbound = new HttpHeaderTransport(outbound, _cfg.WsHost, _cfg.WsPath);
             string dial = !string.IsNullOrEmpty(_cfg.ServerIp) ? _cfg.ServerIp : _cfg.ServerHost;
             await outbound.ConnectAsync(dial, _cfg.ServerPort, ct).ConfigureAwait(false);
             _outbound = outbound;

@@ -27,6 +27,9 @@ namespace CS_Ray.Core.Config
         public string Network = "tcp";   // "tcp" | "ws"
         public string WsPath = "/";
         public string WsHost;
+        /// <summary>TCP header camouflage: "http" (Xray tcpSettings.header.type) or null/"none". Uses WsHost / WsPath
+        /// as the camouflage Host list / request path list (the share link's host= / path=).</summary>
+        public string HeaderType;
 
         public bool UseTls;
         public string Sni;
@@ -65,9 +68,11 @@ namespace CS_Ray.Core.Config
                 case "vless":
                     c.Uuid = Uuid;
                     c.UseTls = UseTls;   // security=tls vs none (was never passed → every VLESS server was dialed with TLS)
+                    c.HeaderType = TcpHeader();
                     break;
                 case "vmess":
                     c.VmessId = Uuid;
+                    c.HeaderType = TcpHeader();
                     c.VmessSecurity = string.IsNullOrEmpty(VmessSecurity) ? "auto" : VmessSecurity;
                     break;
                 case "shadowsocks":
@@ -83,5 +88,10 @@ namespace CS_Ray.Core.Config
             }
             return c;
         }
+
+        // The http header camouflage only exists for the plain tcp transport.
+        private string TcpHeader()
+            => string.Equals(Network ?? "tcp", "tcp", StringComparison.OrdinalIgnoreCase)
+               && string.Equals(HeaderType, "http", StringComparison.OrdinalIgnoreCase) ? "http" : null;
     }
 }

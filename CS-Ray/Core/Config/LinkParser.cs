@@ -113,10 +113,23 @@ namespace CS_Ray.Core.Config
             var security = (Get(q, "security") ?? "").ToLowerInvariant();
             var flow = Get(q, "flow");
             p.UseTls = security == "tls" || security == "reality";
-            if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = p.WsHost;
+            if (type == "tcp" && string.Equals(Get(q, "headerType"), "http", StringComparison.OrdinalIgnoreCase))
+                p.HeaderType = "http";   // tcp http-header camouflage (host= / path= are its Host / path lists)
+            if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
             string reason = UnsupportedReason(type, security, flow, allowXhttp: true); // VLESS supports xhttp (packet-up)
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
+        }
+
+        // host= may be a comma-separated list (http-header camouflage); an SNI default takes only the first entry (v2rayN).
+        private static string FirstOfList(string csv)
+        {
+            foreach (var part in csv.Split(','))
+            {
+                var t = part.Trim();
+                if (t.Length > 0) return t;
+            }
+            return null;
         }
 
         // Recognized-but-unsupported reason for a vless/vmess transport+security combo (null = supported).
@@ -159,9 +172,10 @@ namespace CS_Ray.Core.Config
                 WsPath = string.IsNullOrEmpty(S("path")) ? "/" : S("path"),
                 Sni = S("sni"),
                 UseTls = tls == "tls" || tls == "reality",
-                VmessSecurity = string.IsNullOrEmpty(S("scy")) ? "auto" : S("scy")
+                VmessSecurity = string.IsNullOrEmpty(S("scy")) ? "auto" : S("scy"),
+                HeaderType = net == "tcp" && string.Equals(S("type"), "http", StringComparison.OrdinalIgnoreCase) ? "http" : null
             };
-            if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = p.WsHost;
+            if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
             string reason = aid > 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported" : UnsupportedReason(net, tls, null, allowXhttp: false);
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);

@@ -43,6 +43,8 @@ namespace CS_Ray.Core.Protocol
             ITransport outbound = _cfg.UseTls ? TlsTransportFactory.Create(_cfg.Sni, _cfg.AllowInsecure) : new TcpTransport(); // security=none → plain
             if (IsWebSocket)
                 outbound = new WebSocketTransport(outbound, _cfg.WsPath, WsHostHeader);
+            else if (string.Equals(_cfg.HeaderType, "http", StringComparison.OrdinalIgnoreCase))
+                outbound = new HttpHeaderTransport(outbound, _cfg.WsHost, _cfg.WsPath);
 
             // Dial the pinned IP when set (full tunnel), else the hostname. SNI/WS-Host stay the hostname.
             string dial = !string.IsNullOrEmpty(_cfg.ServerIp) ? _cfg.ServerIp : _cfg.ServerHost;
