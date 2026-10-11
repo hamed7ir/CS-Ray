@@ -86,15 +86,50 @@ namespace CS_Ray.Core.Config
                       rp.SpiderX == "/x" && rp.Sni == "www.apple.com" && rp.ToEngineConfig().Reality != null &&
                       rp.ToEngineConfig().Reality.PublicKey.Length == 32 && rp.ToEngineConfig().Reality.ShortId.Length == 8,
                       rr.Ok ? (rp.Unsupported ? "tagged: " + rp.UnsupportedReason : "reality=" + rp.Reality) : rr.Error);
-                Unsupported(Check, "tag VLESS reality + vision",
-                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&flow=xtls-rprx-vision&pbk=" + pbk), "XTLS");
+                Supported(Check, "VLESS reality + vision SUPPORTED",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&flow=xtls-rprx-vision&pbk=" + pbk),
+                    x => x.Flow == "xtls-rprx-vision" && x.ToEngineConfig().IsVision && x.ToEngineConfig().Reality != null);
+                Supported(Check, "VLESS reality + vision-udp443 alias normalized",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&flow=xtls-rprx-vision-udp443&pbk=" + pbk),
+                    x => x.ToEngineConfig().IsVision);
+                Unsupported(Check, "tag VLESS reality + other flow",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&flow=xtls-rprx-direct&pbk=" + pbk), "only xtls-rprx-vision");
+                Unsupported(Check, "tag VLESS reality + http header",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&headerType=http&security=reality&pbk=" + pbk), "http header");
                 Unsupported(Check, "tag VLESS reality over xhttp",
                     LinkParser.Parse("vless://u@1.2.3.4:443?type=xhttp&security=reality&pbk=" + pbk), "xhttp");
                 Unsupported(Check, "tag VLESS reality bad sid",
                     LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&sid=xyz&pbk=" + pbk), "short id");
             }
-            Unsupported(Check, "tag VLESS xtls flow",
-                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&flow=xtls-rprx-vision"), "XTLS");
+            Supported(Check, "VLESS tls + vision SUPPORTED (fp kept)",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&flow=xtls-rprx-vision&fp=edge"),
+                x => x.ToEngineConfig().IsVision && x.Fingerprint == "edge" && x.ToEngineConfig().Reality == null);
+            Supported(Check, "VLESS tls flow=none is plain TLS",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&flow=none"), x => !x.ToEngineConfig().IsVision);
+            Unsupported(Check, "tag VLESS legacy xtls flow",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&flow=xtls-rprx-direct"), "XTLS");
+            Unsupported(Check, "tag VLESS vision without TLS",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&flow=xtls-rprx-vision"), "needs security");
+            Unsupported(Check, "tag VLESS vision over ws",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=ws&security=tls&flow=xtls-rprx-vision"), "tcp only");
+            Unsupported(Check, "tag VLESS vision + http header",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&headerType=http&security=tls&flow=xtls-rprx-vision"), "http header");
+            Unsupported(Check, "tag VLESS encryption (ML-KEM)",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&encryption=mlkem768x25519plus.native.0rtt.abc"), "encryption");
+            Supported(Check, "VLESS encryption=none is fine",
+                LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=tls&encryption=none"), x => true);
+            Unsupported(Check, "tag VMESS ws (engine is raw TCP)",
+                LinkParser.Parse("vmess://" + B64("{\"add\":\"1.2.3.4\",\"port\":\"80\",\"id\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"aid\":\"0\",\"net\":\"ws\"}")), "raw TCP only");
+            Unsupported(Check, "tag VMESS tls (engine is raw TCP)",
+                LinkParser.Parse("vmess://" + B64("{\"add\":\"1.2.3.4\",\"port\":\"443\",\"id\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"aid\":\"0\",\"net\":\"tcp\",\"tls\":\"tls\"}")), "raw TCP only");
+            {
+                // An edit that supplies the missing REALITY key re-classifies the profile as runnable.
+                var old = LinkParser.Parse("vless://5d8a2b98-8129-4e5c-bc48-3f75e148d1a6@1.2.3.4:443?type=tcp&security=reality&sni=a.com").Profile;
+                bool wasRepairable = old.Unsupported && LinkParser.IsRepairableReason(old.UnsupportedReason);
+                old.RealityPublicKey = "q0ZjwXLc5OCk4V6-cLx3eKZYbcY3wbRW0V5yRS5pXGw";
+                Check("edit repairs a key-less REALITY profile", wasRepairable && LinkParser.ReasonForEditedProfile(old) == null,
+                      old.UnsupportedReason + " -> " + (LinkParser.ReasonForEditedProfile(old) ?? "runnable"));
+            }
             {
                 var rx = LinkParser.Parse("vless://u@1.2.3.4:443?type=xhttp&security=tls&host=h&path=/p#X");
                 Check("VLESS xhttp+tls SUPPORTED", rx.Ok && rx.Profile != null && !rx.Profile.Unsupported && rx.Profile.Network == "xhttp",
@@ -122,6 +157,12 @@ namespace CS_Ray.Core.Config
             bool ok = r.Ok && r.Profile != null && r.Profile.Unsupported &&
                       (r.Profile.UnsupportedReason ?? "").IndexOf(expectFragment, StringComparison.OrdinalIgnoreCase) >= 0;
             check(name, ok, !r.Ok ? "(failed: " + r.Error + ")" : (r.Profile.Unsupported ? r.Profile.UnsupportedReason : "(parsed as SUPPORTED)"));
+        }
+
+        private static void Supported(Action<string, bool, string> check, string name, ParseResult r, Func<ProxyProfile, bool> fields)
+        {
+            bool ok = r.Ok && r.Profile != null && !r.Profile.Unsupported && fields(r.Profile);
+            check(name, ok, !r.Ok ? "(failed: " + r.Error + ")" : (r.Profile.Unsupported ? "tagged: " + r.Profile.UnsupportedReason : "fields"));
         }
 
         private static void Reject(Action<string, bool, string> check, string name, ParseResult r, string expectFragment)

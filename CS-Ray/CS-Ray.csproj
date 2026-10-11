@@ -67,6 +67,7 @@
     <Compile Include="Core\Transport\Tls13\Tls13Transport.cs" />
     <Compile Include="Core\Inbound\MixedInbound.cs" />
     <Compile Include="Core\Protocol\VlessProtocol.cs" />
+    <Compile Include="Core\Protocol\VlessVision.cs" />
     <Compile Include="Core\Protocol\ProxyClients.cs" />
     <Compile Include="Core\Protocol\IUdpOutbound.cs" />
     <Compile Include="Core\Protocol\VlessUdpSession.cs" />

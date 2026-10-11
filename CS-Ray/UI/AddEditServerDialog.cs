@@ -41,6 +41,7 @@ namespace CS_Ray.UI
         private readonly ThemedTextBox _txtPbk = NewText("REALITY public key (pbk)");
         private readonly ThemedTextBox _txtSid = NewText("REALITY short ID (sid, hex — optional)");
         private readonly ThemedComboBox _cboFp = NewCombo("Fingerprint (fp)");
+        private readonly ThemedComboBox _cboFlow = NewCombo("Flow");
         private readonly ToggleSwitch _swInsecure = new ToggleSwitch();
         private readonly Label _lblInsecure = NewToggleLabel("Allow insecure (skip cert check)");
         private readonly Label _lblError = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Font = FontHelper.Ui(9f) };
@@ -53,7 +54,6 @@ namespace CS_Ray.UI
         private readonly bool _unsupported;  // editing a recognized-but-unsupported server → show a read-only note
         private readonly string _noteText;
         private readonly string _keepSpiderX;   // not editable here — carried over so an edit doesn't drop it
-        private readonly string _keepFlow;
 
         /// <summary>The profile produced on OK (null on Cancel).</summary>
         public ProxyProfile Result { get; private set; }
@@ -65,7 +65,6 @@ namespace CS_Ray.UI
             _unsupported = existing != null && existing.Unsupported;
             _noteText = existing?.UnsupportedReason;
             _keepSpiderX = existing?.SpiderX;
-            _keepFlow = existing?.Flow;
 
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); } };
@@ -75,11 +74,12 @@ namespace CS_Ray.UI
             _cboHeader.Items.AddRange(new object[] { "none", "http" });
             _cboSecurity.Items.AddRange(new object[] { "none", "tls", "reality" });
             _cboFp.Items.AddRange(new object[] { "chrome", "edge", "firefox", "safari", "ios", "android", "random" });
+            _cboFlow.Items.AddRange(new object[] { "none", Core.Protocol.VlessProtocol.FlowVision });
             _cboSsMethod.Items.AddRange(SsMethods);
 
             foreach (var c in new Control[] { _cboProtocol, _cboNetwork, _cboHeader, _cboSsMethod, _txtName, _txtAddress,
                 _txtPort, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _cboSecurity, _txtSni,
-                _txtPbk, _txtSid, _cboFp, _lblInsecure, _swInsecure, _lblError, _lblNote })
+                _txtPbk, _txtSid, _cboFp, _cboFlow, _lblInsecure, _swInsecure, _lblError, _lblNote })
             { if (!(c is ToggleSwitch)) c.Width = FieldW; Body.Host.Controls.Add(c); } // switches keep their DPI-scaled size
             _txtPort.Width = DrawHelper.Px(120);
             _swInsecure.TabStop = true;   // keyboard: Tab reaches it, Space flips it
@@ -96,13 +96,14 @@ namespace CS_Ray.UI
             _cboNetwork.SelectedIndexChanged += (s, e) => Relayout();
             _cboHeader.SelectedIndexChanged += (s, e) => Relayout();
             _cboSecurity.SelectedIndexChanged += (s, e) => Relayout();
+            _cboFlow.SelectedIndexChanged += (s, e) => Relayout();
             _btnOk.Click += OnOk;
 
             if (existing != null) LoadFrom(existing);
             else
             {
                 _cboProtocol.SelectedIndex = 0; _cboNetwork.SelectedIndex = 0; _cboHeader.SelectedIndex = 0; _cboSsMethod.SelectedIndex = 0;
-                _cboSecurity.SelectedItem = "tls"; _cboFp.SelectedIndex = 0; _txtWsPath.Text = "/";
+                _cboSecurity.SelectedItem = "tls"; _cboFp.SelectedIndex = 0; _cboFlow.SelectedIndex = 0; _txtWsPath.Text = "/";
             }
 
             ApplyDialogTheme();
@@ -113,6 +114,7 @@ namespace CS_Ray.UI
         private string Net => (_cboNetwork.SelectedItem as string) ?? "tcp";
         private string Hdr => (_cboHeader.SelectedItem as string) ?? "none";
         private string Sec => (_cboSecurity.SelectedItem as string) ?? "tls";
+        private string FlowSel => (_cboFlow.SelectedItem as string) ?? "none";
 
         protected override void ApplyDialogTheme()
         {
@@ -136,6 +138,8 @@ namespace CS_Ray.UI
             bool tcp = vlessLike && Net == "tcp";
             bool tcpHttp = tcp && Hdr == "http";          // tcp http-header camouflage uses Host / Path too
             bool reality = vless && tcp && !tcpHttp && Sec == "reality";   // REALITY: VLESS over plain tcp only
+            bool flowable = vless && tcp && !tcpHttp && Sec != "none";      // XTLS Vision: tcp + tls/reality
+            bool vision = flowable && FlowSel != "none";
 
             _tabIndex = 0;
             int y = DrawHelper.Px(10);
@@ -161,7 +165,8 @@ namespace CS_Ray.UI
             Place(_txtSni, ref y, vlessLike || https);         // vless TLS/REALITY/xhttp + https-proxy TLS
             Place(_txtPbk, ref y, reality);
             Place(_txtSid, ref y, reality);
-            Place(_cboFp, ref y, reality);
+            Place(_cboFp, ref y, reality || vision);           // our TLS 1.3 hello shape (REALITY, or tls+Vision)
+            Place(_cboFlow, ref y, flowable);
             PlaceToggle(_lblInsecure, _swInsecure, ref y, (vlessLike && !reality) || https);   // REALITY authenticates by key
 
             int errH = Math.Max(DrawHelper.Px(22), _lblError.Font.Height + DrawHelper.Px(6));
@@ -256,7 +261,16 @@ namespace CS_Ray.UI
                 prof.AllowInsecure = _swInsecure.Checked;
                 string sec = Net == "xhttp" ? "tls" : Sec;      // xhttp implies TLS
                 prof.UseTls = sec != "none";
-                prof.Flow = _keepFlow;
+                if (proto == "vmess" && (Net != "tcp" || sec != "none"))
+                    return "VMess is supported over raw tcp only (security none, optional http header).";
+                // Same visibility rule as Relayout: a Flow choice the user can't see doesn't count.
+                bool flowable = proto == "vless" && Net == "tcp" && Hdr != "http" && sec != "none";
+                string flow = flowable && FlowSel != "none" ? FlowSel : null;
+                if (flow != null)
+                {
+                    prof.Flow = flow;
+                    prof.Fingerprint = (_cboFp.SelectedItem as string) ?? "chrome";
+                }
                 if (sec == "reality")
                 {
                     if (proto != "vless") return "REALITY is supported for VLESS only.";
@@ -315,6 +329,9 @@ namespace CS_Ray.UI
             string fp = string.IsNullOrEmpty(p.Fingerprint) ? "chrome" : p.Fingerprint.ToLowerInvariant();
             if (_cboFp.Items.IndexOf(fp) < 0) _cboFp.Items.Add(fp);   // keep an exotic fp (qq, 360, randomized…) as-is
             _cboFp.SelectedItem = fp;
+            string fl = string.IsNullOrEmpty(p.Flow) ? "none" : p.Flow;
+            if (_cboFlow.Items.IndexOf(fl) < 0) _cboFlow.Items.Add(fl);   // keep an unsupported flow visible as-is
+            _cboFlow.SelectedItem = fl;
             _swInsecure.Checked = p.AllowInsecure;
         }
 

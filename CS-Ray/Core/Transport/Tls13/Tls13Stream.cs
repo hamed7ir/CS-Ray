@@ -26,6 +26,9 @@ namespace CS_Ray.Core.Transport.Tls13
         /// <summary>Error text when the server sends a CompressedCertificate (we offer brotli for browser parity but can't
         /// decode it yet). REALITY overrides it: a REALITY server never compresses, only its camouflage target does.</summary>
         public string CompressedCertificateError;
+        /// <summary>Appended to handshake failures that happen before the server's certificate was accepted (REALITY: a
+        /// rejected client is spliced to the camouflage target, which can fail in many shapes).</summary>
+        public string FailureHint;
     }
 
     /// <summary>
@@ -46,6 +49,27 @@ namespace CS_Ray.Core.Transport.Tls13
         private Tls13RecordKeys _readKeys, _writeKeys;
         private byte[] _plain = new byte[0]; private int _plainOff;   // decrypted app data not yet returned
         private bool _eof;
+        // XTLS Vision "direct copy": after the peer's Direct frame (read) / our Direct frame (write) that direction carries
+        // the inner TLS stream raw on the socket — no more outer records, and never a close_notify / KeyUpdate again.
+        private volatile bool _rawRead, _rawWrite;
+        // Set as soon as our Direct frame is on the wire: the peer reads our side raw from then on, so no outer record
+        // (close_notify, KeyUpdate reply) may follow even before the next write flips _rawWrite (Xray #6794).
+        private volatile bool _quiet;
+
+        private const int MaxHandshakeMessage = 65536;   // Go crypto/tls maxHandshake
+
+        // Raw-read filter for Xray servers built before 2026-09-27 (XTLS/Xray-core #6794): after its Direct switch such a
+        // server still seals an outer close_notify (17 03 03 00 13 + 19 bytes) onto the raw socket when it closes, which
+        // the inner TLS client would read as a corrupt record ("bad record MAC"). We follow the inner TLS record framing
+        // and drop a 24-byte record only if it AUTHENTICATES under our outer read key as close_notify — a genuine inner
+        // record can't, so nothing real is ever dropped.
+        private int _rawRecLeft;                       // bytes left of the current inner record (0 = at a boundary)
+        private bool _rawUntracked;                    // framing didn't look like TLS: plain pass-through from here
+        private byte[] _rawHold = new byte[0];         // an incomplete header / candidate record awaiting more bytes
+        private byte[] _rawOut = new byte[0];          // scanned bytes ready for the caller
+        private int _rawOutOff;
+        private readonly byte[] _rawBuf = new byte[16384];
+        private static readonly SecureRandom Rng = new SecureRandom();
         private int _disposed;
 
         public string NegotiatedAlpn { get; private set; }
@@ -60,8 +84,26 @@ namespace CS_Ray.Core.Transport.Tls13
 
         public async Task HandshakeAsync(CancellationToken ct)
         {
+            try { await HandshakeCoreAsync(ct).ConfigureAwait(false); }
+            catch (Tls13Exception ex) when (_opt.FailureHint != null && !_certificateSeen && !ex.Message.EndsWith(_opt.FailureHint, StringComparison.Ordinal))
+            {
+                throw new Tls13Exception(ex.Message + _opt.FailureHint, ex);
+            }
+        }
+
+        private bool _certificateSeen;
+
+        private async Task HandshakeCoreAsync(CancellationToken ct)
+        {
             var hello = ClientHelloBuilder.Build(_opt.ServerName, _opt.Alpn, _opt.Profile);
-            _opt.PatchHello?.Invoke(hello);
+            if (_opt.PatchHello == null)
+            {
+                // A browser's middlebox-compat session id is 32 random bytes (the builder leaves zeros for REALITY's seal).
+                var rnd = new byte[32];
+                lock (Rng) Rng.NextBytes(rnd);
+                Buffer.BlockCopy(rnd, 0, hello.Raw, hello.SessionIdOffset, 32);
+            }
+            else _opt.PatchHello(hello);
             byte[] sessionId = new byte[32];
             Buffer.BlockCopy(hello.Raw, hello.SessionIdOffset, sessionId, 0, 32);
 
@@ -86,9 +128,14 @@ namespace CS_Ray.Core.Transport.Tls13
             _readKeys = new Tls13RecordKeys(s, sHs);
             var clientHsKeys = new Tls13RecordKeys(s, cHs);
 
-            // Encrypted server flight: EncryptedExtensions, Certificate, CertificateVerify, Finished
+            // Encrypted server flight, strictly in order and each exactly once (RFC 8446 §4.4; no client auth, no PSK):
+            // EncryptedExtensions → Certificate → CertificateVerify → Finished. Finished alone only proves knowledge of the
+            // (EC)DHE secret, which an on-path attacker picks — the certificate key's signature is what binds the session.
+            const int ExpectEE = 0, ExpectCert = 1, ExpectCv = 2, ExpectFinished = 3;
+            int state = ExpectEE;
             List<byte[]> certs = null;
             byte[] leafKeyDer = null;
+            bool cvOk = false;
             bool done = false;
             var hsQueue = new MemoryStream();
             while (!done)
@@ -100,10 +147,16 @@ namespace CS_Ray.Core.Transport.Tls13
                     switch (type)
                     {
                         case 8:   // EncryptedExtensions
+                            if (state != ExpectEE) throw new Tls13Exception("TLS: unexpected EncryptedExtensions");
                             ParseEncryptedExtensions(msg);
                             transcript.Write(msg, 0, msg.Length);
+                            state = ExpectCert;
                             break;
+                        case 13:  // CertificateRequest
+                            throw new Tls13Exception("TLS: the server requires a client certificate (unsupported)");
                         case 11:  // Certificate
+                            if (state != ExpectCert) throw new Tls13Exception("TLS: unexpected Certificate");
+                            _certificateSeen = true;   // from here the verifier's own message explains a failure
                             certs = ParseCertificate(msg);
                             if (certs.Count == 0) throw new Tls13Exception("TLS: server sent an empty certificate list");
                             string why = _opt.VerifyCertificates != null ? _opt.VerifyCertificates(certs) : "no certificate verifier configured";
@@ -111,14 +164,17 @@ namespace CS_Ray.Core.Transport.Tls13
                             if (why != null) throw new Tls13Exception("TLS: " + why);
                             leafKeyDer = certs[0];
                             transcript.Write(msg, 0, msg.Length);
+                            state = ExpectCv;
                             break;
                         case 15:  // CertificateVerify — signs the transcript up to (and incl.) Certificate
-                            if (leafKeyDer == null) throw new Tls13Exception("TLS: CertificateVerify before Certificate");
+                            if (state != ExpectCv || leafKeyDer == null) throw new Tls13Exception("TLS: unexpected CertificateVerify");
                             VerifyCertificateVerify(msg, leafKeyDer, Tls13Kdf.Hash(s, transcript.ToArray()));
+                            cvOk = true;
                             transcript.Write(msg, 0, msg.Length);
+                            state = ExpectFinished;
                             break;
                         case 20:  // Finished
-                            if (leafKeyDer == null) throw new Tls13Exception("TLS: server Finished without authentication");
+                            if (state != ExpectFinished || !cvOk) throw new Tls13Exception("TLS: server Finished without a verified CertificateVerify");
                             byte[] fk = Tls13Kdf.ExpandLabel(s, sHs, "finished", null, s.HashLen);
                             byte[] expect = Tls13Kdf.Hmac(s, fk, Tls13Kdf.Hash(s, transcript.ToArray()));
                             if (!FixedEquals(expect, Slice(msg, 4, msg.Length - 4))) throw new Tls13Exception("TLS: server Finished verify_data mismatch");
@@ -126,7 +182,8 @@ namespace CS_Ray.Core.Transport.Tls13
                             done = true;
                             break;
                         case 25:  // CompressedCertificate (RFC 8879)
-                            throw new Tls13Exception(_opt.CompressedCertificateError ?? "TLS: the server sent a brotli-compressed certificate, which this client can't decode yet");
+                            if (_opt.CompressedCertificateError != null) { _certificateSeen = true; throw new Tls13Exception(_opt.CompressedCertificateError); }
+                            throw new Tls13Exception("TLS: the server sent a brotli-compressed certificate, which this client can't decode yet");
                         default:
                             throw new Tls13Exception("TLS: unexpected handshake message " + type + " in the server flight");
                     }
@@ -180,32 +237,36 @@ namespace CS_Ray.Core.Transport.Tls13
             var r = new Reader(m, 4);
             r.U16();                                   // legacy_version
             byte[] random = r.Bytes(32);
-            if (FixedEquals(random, HrrRandom)) throw new Tls13Exception("TLS: server asked for HelloRetryRequest (unsupported)");
             byte[] sid = r.Bytes(r.U8());
-            if (!FixedEquals(sid, ourSessionId)) throw new Tls13Exception("TLS: ServerHello session id echo mismatch");
             ushort suite = (ushort)r.U16();
-            _suite = Tls13Suite.ById(suite);
-            if (_suite == null) throw new Tls13Exception("TLS: server chose an unsupported cipher suite 0x" + suite.ToString("x4"));
-            if (r.U8() != 0) throw new Tls13Exception("TLS: server chose compression");
+            int compression = r.U8();
             serverShare = null; group = 0;
             bool tls13 = false;
+            int keyLen = -1;
             int extEnd = r.U16() + r.Pos;
             while (r.Pos < extEnd)
             {
                 int type = r.U16(), len = r.U16(), end = r.Pos + len;
-                if (type == 0x002b) tls13 = r.U16() == 0x0304;
-                else if (type == 0x0033)
+                if (type == 0x002b && len == 2) tls13 = r.U16() == 0x0304;
+                else if (type == 0x0033 && len >= 4)
                 {
-                    group = r.U16(); int kl = r.U16();
-                    bool ok = (group == ClientHelloBuilder.GroupX25519 && kl == 32)
-                           || (offeredHybrid && group == ClientHelloBuilder.GroupX25519MlKem768 && kl == 1120);
-                    if (!ok) throw new Tls13Exception("TLS: server key share (group 0x" + group.ToString("x4") + ", " + kl + " bytes) was not offered");
-                    serverShare = r.Bytes(kl);
+                    group = r.U16(); keyLen = r.U16();
+                    if (keyLen == len - 4) serverShare = r.Bytes(keyLen);
                 }
                 r.Pos = end;
             }
+            if (r.Pos != m.Length) throw new Tls13Exception("TLS: malformed ServerHello");
+            // Checks in the order that gives the most useful message.
             if (!tls13) throw new Tls13Exception("TLS: server did not negotiate TLS 1.3");
-            if (serverShare == null) throw new Tls13Exception("TLS: ServerHello without a key share");
+            if (FixedEquals(random, HrrRandom)) throw new Tls13Exception("TLS: server asked for HelloRetryRequest (unsupported)");
+            if (!FixedEquals(sid, ourSessionId)) throw new Tls13Exception("TLS: ServerHello session id echo mismatch");
+            _suite = Tls13Suite.ById(suite);
+            if (_suite == null) throw new Tls13Exception("TLS: server chose an unsupported cipher suite 0x" + suite.ToString("x4"));
+            if (compression != 0) throw new Tls13Exception("TLS: server chose compression");
+            if (serverShare == null) throw new Tls13Exception("TLS: ServerHello without a usable key share");
+            bool shareOk = (group == ClientHelloBuilder.GroupX25519 && keyLen == 32)
+                        || (offeredHybrid && group == ClientHelloBuilder.GroupX25519MlKem768 && keyLen == 1120);
+            if (!shareOk) throw new Tls13Exception("TLS: server key share (group 0x" + group.ToString("x4") + ", " + keyLen + " bytes) was not offered");
         }
 
         private void ParseEncryptedExtensions(byte[] m)
@@ -260,9 +321,15 @@ namespace CS_Ray.Core.Transport.Tls13
                 case 0x0806: case 0x080b: signer = SignerUtilities.GetSigner("SHA-512withRSAandMGF1"); break;
                 default: throw new Tls13Exception("TLS: unsupported CertificateVerify scheme 0x" + scheme.ToString("x4"));
             }
-            signer.Init(false, key);
-            signer.BlockUpdate(content, 0, content.Length);
-            if (!signer.VerifySignature(sig)) throw new Tls13Exception("TLS: CertificateVerify signature is invalid");
+            bool valid;
+            try
+            {
+                signer.Init(false, key);   // throws when the scheme doesn't match the certificate's key type
+                signer.BlockUpdate(content, 0, content.Length);
+                valid = signer.VerifySignature(sig);
+            }
+            catch (Exception ex) { throw new Tls13Exception("TLS: CertificateVerify scheme 0x" + scheme.ToString("x4") + " doesn't fit the certificate key", ex); }
+            if (!valid) throw new Tls13Exception("TLS: CertificateVerify signature is invalid");
         }
 
         // ───────────────────────── record I/O ─────────────────────────
@@ -302,9 +369,11 @@ namespace CS_Ray.Core.Transport.Tls13
                 if (_hdr[0] != 0x16) throw new Tls13Exception("TLS: unexpected record type " + _hdr[0] + " before ServerHello");
                 acc.Write(body, 0, body.Length);
                 var a = acc.ToArray();
+                if (a.Length >= 1 && a[0] != 2) throw new Tls13Exception("TLS: expected ServerHello, got handshake type " + a[0]);
                 if (a.Length >= 4)
                 {
                     int need = 4 + ((a[1] << 16) | (a[2] << 8) | a[3]);
+                    if (need > 4 + MaxHandshakeMessage) throw new Tls13Exception("TLS: oversized ServerHello");
                     if (a.Length >= need) return Slice(a, 0, need);   // (a coalesced extra message would be a protocol error)
                 }
             }
@@ -337,6 +406,7 @@ namespace CS_Ray.Core.Transport.Tls13
             while (a.Length - off >= 4)
             {
                 int need = 4 + ((a[off + 1] << 16) | (a[off + 2] << 8) | a[off + 3]);
+                if (need > 4 + MaxHandshakeMessage) throw new Tls13Exception("TLS: oversized handshake message");
                 if (a.Length - off < need) break;
                 list.Add(Slice(a, off, need)); off += need;
             }
@@ -355,9 +425,25 @@ namespace CS_Ray.Core.Transport.Tls13
 
         // ───────────────────────── application data ─────────────────────────
 
+        /// <summary>Reads stop decrypting: leftover plaintext of the current record is returned first, then raw socket
+        /// bytes (Xray VisionReader: content, then the TLS conn's input, then rawInput, then the raw conn). We never read
+        /// past a record, so there is no buffered ciphertext to hand over. Call from the (single) reader only.</summary>
+        internal void SwitchReadToRaw() => _rawRead = true;
+
+        /// <summary>Writes stop encrypting: everything after this goes to the socket as-is (Xray UnwrapRawConn).</summary>
+        internal void SwitchWriteToRaw() => _rawWrite = true;
+
+        /// <summary>Our Direct frame is on the wire: from now on we may write no further outer record (the next app write
+        /// goes raw via <see cref="SwitchWriteToRaw"/>), and teardown must not send close_notify.</summary>
+        internal void SuppressOuterRecords() => _quiet = true;
+
+        /// <summary>True once either direction went raw (or our Direct frame was sent) — the outer TLS session must stay silent.</summary>
+        internal bool IsRaw => _rawRead || _rawWrite || _quiet;
+
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
             if (count <= 0) return 0;
+            if (_rawRead && _plainOff >= _plain.Length) return await RawReadAsync(buffer, offset, count, ct).ConfigureAwait(false);
             while (_plainOff >= _plain.Length)
             {
                 if (_eof) return 0;
@@ -380,8 +466,91 @@ namespace CS_Ray.Core.Transport.Tls13
             int n = Math.Min(count, _plain.Length - _plainOff);
             Buffer.BlockCopy(_plain, _plainOff, buffer, offset, n);
             _plainOff += n;
+            if (_rawRead) Track(buffer, offset, n);   // leftover plaintext after a Direct switch is inner stream too
             return n;
         }
+
+        private async Task<int> RawReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            while (true)
+            {
+                if (_rawOutOff < _rawOut.Length)
+                {
+                    int n = Math.Min(count, _rawOut.Length - _rawOutOff);
+                    Buffer.BlockCopy(_rawOut, _rawOutOff, buffer, offset, n);
+                    _rawOutOff += n;
+                    return n;
+                }
+                if (_eof) return 0;
+                int r = await _net.ReadAsync(_rawBuf, 0, _rawBuf.Length, ct).ConfigureAwait(false);
+                byte[] data;
+                if (r <= 0)
+                {
+                    _eof = true;
+                    data = _rawHold; _rawHold = new byte[0];   // an unfinished record at EOF: pass it on as-is
+                }
+                else
+                {
+                    data = new byte[_rawHold.Length + r];
+                    Buffer.BlockCopy(_rawHold, 0, data, 0, _rawHold.Length);
+                    Buffer.BlockCopy(_rawBuf, 0, data, _rawHold.Length, r);
+                    _rawHold = new byte[0];
+                    data = Scan(data);
+                }
+                _rawOut = data; _rawOutOff = 0;
+            }
+        }
+
+        // Advances the inner record tracker over bytes already delivered.
+        private void Track(byte[] b, int off, int len)
+        {
+            int p = off, end = off + len;
+            while (p < end && !_rawUntracked)
+            {
+                if (_rawRecLeft > 0) { int k = Math.Min(_rawRecLeft, end - p); p += k; _rawRecLeft -= k; continue; }
+                if (end - p < 5) { _rawUntracked = true; break; }   // a header split across the switch: stop filtering
+                if (!LooksLikeRecordHeader(b, p)) { _rawUntracked = true; break; }
+                _rawRecLeft = (b[p + 3] << 8) | b[p + 4];
+                p += 5;
+            }
+        }
+
+        // Splits freshly read raw bytes into "deliver now" (returned) and "hold" (_rawHold: an incomplete header or an
+        // incomplete 24-byte candidate). Drops a candidate that authenticates as our peer's outer close_notify.
+        private byte[] Scan(byte[] d)
+        {
+            if (_rawUntracked) return d;
+            var outBuf = new MemoryStream(d.Length);
+            int p = 0, start = 0;
+            while (p < d.Length)
+            {
+                if (_rawRecLeft > 0) { int k = Math.Min(_rawRecLeft, d.Length - p); p += k; _rawRecLeft -= k; continue; }
+                if (d.Length - p < 5) { _rawHold = Slice(d, p, d.Length - p); break; }
+                if (!LooksLikeRecordHeader(d, p)) { _rawUntracked = true; p = d.Length; break; }
+                int len = (d[p + 3] << 8) | d[p + 4];
+                if (d[p] == 0x17 && len == 0x13 && _readKeys != null)
+                {
+                    if (d.Length - p < 24) { _rawHold = Slice(d, p, d.Length - p); break; }
+                    byte type; byte[] content;
+                    if (_readKeys.TryOpen(Slice(d, p, 5), Slice(d, p + 5, 19), out type, out content) && type == 0x15)
+                    {
+                        // The server's stray outer alert: deliver what came before, drop it, and end the stream.
+                        outBuf.Write(d, start, p - start);
+                        Trace?.Invoke("dropped a stray outer TLS alert after the XTLS direct switch (pre-2026-09 Xray server)");
+                        _eof = true;
+                        return outBuf.ToArray();
+                    }
+                }
+                _rawRecLeft = len;
+                p += 5;
+            }
+            int deliverEnd = Math.Min(p, d.Length - _rawHold.Length);
+            outBuf.Write(d, start, deliverEnd - start);
+            return outBuf.ToArray();
+        }
+
+        private static bool LooksLikeRecordHeader(byte[] b, int p)
+            => b[p] >= 0x14 && b[p] <= 0x18 && b[p + 1] == 0x03 && b[p + 2] <= 0x04;
 
         // NewSessionTicket → ignored (no resumption). KeyUpdate → rotate read keys; answer if the peer asked.
         private void HandlePostHandshake(byte[] content)
@@ -391,11 +560,13 @@ namespace CS_Ray.Core.Transport.Tls13
             {
                 byte type = content[off];
                 int len = (content[off + 1] << 16) | (content[off + 2] << 8) | content[off + 3];
+                if (off + 4 + len > content.Length) throw new IOException("TLS: truncated post-handshake message");
                 if (type == 24)
                 {
-                    bool requested = len >= 1 && content[off + 4] == 1;
+                    if (len != 1) throw new IOException("TLS: malformed KeyUpdate");
+                    bool requested = content[off + 4] == 1;
                     _readKeys = _readKeys.Next();
-                    if (requested) Task.Run(SendKeyUpdateAsync);   // never block the reader on the write gate
+                    if (requested && !_rawWrite && !_quiet) Task.Run(SendKeyUpdateAsync);   // never block the reader on the write gate
                 }
                 off += 4 + len;
             }
@@ -408,6 +579,7 @@ namespace CS_Ray.Core.Transport.Tls13
                 await _writeGate.WaitAsync().ConfigureAwait(false);
                 try
                 {
+                    if (_rawWrite || _quiet) return;   // the peer reads us raw now: an outer record would corrupt the stream
                     var ku = new byte[] { 24, 0, 0, 1, 0 };   // update_not_requested
                     var rec = _writeKeys.Seal(0x16, ku, 0, ku.Length);
                     await _net.WriteAsync(rec, 0, rec.Length).ConfigureAwait(false);
@@ -423,6 +595,11 @@ namespace CS_Ray.Core.Transport.Tls13
             await _writeGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                if (_rawWrite)
+                {
+                    if (count > 0) await _net.WriteAsync(buffer, offset, count, ct).ConfigureAwait(false);
+                    return;
+                }
                 while (count > 0)
                 {
                     int n = Math.Min(count, 1 << 14);
@@ -451,8 +628,9 @@ namespace CS_Ray.Core.Transport.Tls13
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             if (disposing)
             {
-                // Best-effort close_notify, never blocking (same rule as BcTlsStream).
-                if (_writeKeys != null && _writeGate.Wait(0))
+                // Best-effort close_notify, never blocking (same rule as BcTlsStream) — and never once either direction
+                // went raw: the peer would read those 24 bytes as inner TLS data (Xray SuppressOuterCloseNotify, #6794).
+                if (_writeKeys != null && !IsRaw && _writeGate.Wait(0))
                 {
                     try
                     {

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,6 +32,11 @@ namespace CS_Ray.Core
         public string WsHost;          // WebSocket Host header (network=ws); defaults to Sni ?? ServerHost
         public string HeaderType;      // tcp header camouflage: "http" (WsHost/WsPath = host/path lists) or null
         public Transport.Tls13.RealityConfig Reality; // security=reality (tcp only): replaces TLS — null otherwise
+        public string Flow;            // VLESS flow: null or "xtls-rprx-vision" (tcp + tls/reality only)
+        public string Fingerprint;     // uTLS fp for our own TLS 1.3 client (REALITY carries its own; used by tls+Vision)
+
+        /// <summary>VLESS with XTLS Vision.</summary>
+        public bool IsVision => Flow == CS_Ray.Core.Protocol.VlessProtocol.FlowVision;
 
         // Shadowsocks (AEAD over raw TCP, no TLS)
         public string SsMethod = "chacha20-ietf-poly1305";
@@ -122,9 +128,13 @@ namespace CS_Ray.Core
                             (string.IsNullOrEmpty(_config.ProxyUser) ? "" : " (auth)") +
                             " — TCP-carry only (DNS via engine; non-DNS UDP → TCP fallback).");
             else if (_config.Reality != null)
-                Log?.Invoke("Outbound: VLESS over REALITY to " + _config.ServerHost + ":" + _config.ServerPort +
+                Log?.Invoke("Outbound: VLESS" + (_config.IsVision ? " + XTLS Vision" : "") + " over REALITY to " + _config.ServerHost + ":" + _config.ServerPort +
                             " (SNI=" + _config.Reality.ServerName + ", fp=" + (string.IsNullOrEmpty(_config.Reality.Fingerprint) ? "chrome" : _config.Reality.Fingerprint) +
                             " → " + Transport.Tls13.ClientHelloBuilder.ProfileFor(_config.Reality.Fingerprint) + " hello)");
+            else if (_config.IsVision)
+                Log?.Invoke("Outbound: VLESS + XTLS Vision over TLS 1.3 (built-in client) to " + _config.ServerHost + ":" + _config.ServerPort +
+                            " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) + ", fp=" +
+                            (string.IsNullOrEmpty(_config.Fingerprint) ? "chrome" : _config.Fingerprint) + ", allowInsecure=" + _config.AllowInsecure + ")");
             else
                 Log?.Invoke("Outbound: VLESS network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") +
                             (IsHttpHeader ? "+http-header" : "") + (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
@@ -189,7 +199,7 @@ namespace CS_Ray.Core
             // TlsTransport; tcp/ws use TCP→TLS (security=tls) or plain TCP (security=none), +WebSocket when network=ws.
             ITransport outbound;
             if (IsXhttp)
-                outbound = new XhttpTransport(_config.Sni, _config.AllowInsecure, _config.WsPath, WsHostHeader, Verbose ? Log : null);
+                outbound = new XhttpTransport(TlsTransportFactory.SniOrHost(_config), _config.AllowInsecure, _config.WsPath, WsHostHeader, Verbose ? Log : null);
             else
             {
                 outbound = TlsTransportFactory.CreateVlessSecurity(_config);
@@ -202,6 +212,29 @@ namespace CS_Ray.Core
             {
                 await outbound.ConnectAsync(DialHost, _config.ServerPort, ct).ConfigureAwait(false);
                 var server = outbound.GetStream();
+
+                if (_config.IsVision)
+                {
+                    // XTLS Vision: the header rides with the first padded frame; VisionStream also strips the response
+                    // header and may switch either direction of the TLS 1.3 stream to raw TCP.
+                    var tls = (outbound as Transport.Tls13.Tls13Transport)?.Tls13
+                              ?? throw new IOException("XTLS Vision needs REALITY or TLS over plain tcp");
+                    var vision = new VisionStream(tls, _uuid,
+                        VlessProtocol.BuildRequestHeader(_uuid, conn.TargetHost, conn.TargetPort, VlessProtocol.CmdTcp, VlessProtocol.FlowVision));
+                    vision.Start();
+                    await StreamRelay.RelayAsync(
+                        conn.Stream,
+                        vision,
+                        onClose: () =>
+                        {
+                            try { vision.Dispose(); } catch { }
+                            outbound.Close();
+                            try { conn.Client.Close(); } catch { }
+                        },
+                        ct: ct,
+                        onError: s => Log?.Invoke("VLESS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s)).ConfigureAwait(false);
+                    return;
+                }
 
                 var header = VlessProtocol.BuildRequestHeader(_uuid, conn.TargetHost, conn.TargetPort);
                 await server.WriteAsync(header, 0, header.Length, ct).ConfigureAwait(false);

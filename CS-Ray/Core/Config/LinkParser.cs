@@ -113,13 +113,13 @@ namespace CS_Ray.Core.Config
             var security = (Get(q, "security") ?? "").ToLowerInvariant();
             var flow = Get(q, "flow");
             p.Flow = string.IsNullOrEmpty(flow) ? null : flow;
+            p.Fingerprint = Get(q, "fp");   // REALITY and tls+Vision hellos
             p.UseTls = security == "tls" || security == "reality";
             if (security == "reality")
             {
                 p.Reality = true;
                 p.RealityPublicKey = Get(q, "pbk");
                 p.RealityShortId = Get(q, "sid");
-                p.Fingerprint = Get(q, "fp");
                 p.SpiderX = Get(q, "spx");
             }
             if (type == "tcp" && string.Equals(Get(q, "headerType"), "http", StringComparison.OrdinalIgnoreCase))
@@ -127,7 +127,7 @@ namespace CS_Ray.Core.Config
             if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
             string reason = UnsupportedReason(type, security, flow, allowXhttp: true, allowReality: true) // VLESS: xhttp (packet-up), REALITY (tcp)
-                         ?? RealityParamsReason(p);
+                         ?? RealityParamsReason(p) ?? HeaderComboReason(p) ?? EncryptionReason(Get(q, "encryption"));
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
         }
 
@@ -146,20 +146,77 @@ namespace CS_Ray.Core.Config
         // VLESS supports xhttp over TLS (packet-up); VMess does not (engine VMess is raw-TCP only).
         internal static string UnsupportedReason(string type, string security, string flow, bool allowXhttp, bool allowReality)
         {
+            string nflow = Protocol.VlessProtocol.NormalizeFlow(flow);
+            bool vision = nflow == Protocol.VlessProtocol.FlowVision;
             if (security == "reality")
             {
                 if (!allowReality) return "REALITY (VMess) — unsupported (VLESS only)";
-                if (!string.IsNullOrEmpty(flow)) return "REALITY + XTLS flow '" + flow + "' — not supported yet";
+                if (nflow != null && !vision) return "REALITY + XTLS flow '" + flow + "' — unsupported (only xtls-rprx-vision)";
                 if (type != "tcp") return "REALITY over '" + type + "' — not supported yet (tcp only)";
                 return null;
             }
-            if (!string.IsNullOrEmpty(flow)) return "XTLS flow '" + flow + "' — unsupported";
+            if (nflow != null)
+            {
+                if (!vision || !allowReality) return "XTLS flow '" + flow + "' — unsupported";
+                if (security != "tls") return "XTLS Vision needs security=tls or reality";
+                if (type != "tcp") return "XTLS Vision over '" + type + "' — unsupported (tcp only)";
+                return null;
+            }
             if (type == "xhttp")
             {
                 if (!allowXhttp) return "XHTTP (VMess) — unsupported by the managed engine";
                 return security == "tls" ? null : "XHTTP requires TLS — unsupported";
             }
             if (type != "tcp" && type != "ws") return "'" + type + "' transport — unsupported (only tcp/ws)";
+            return null;
+        }
+
+        /// <summary>The engine speaks VMess over raw TCP only (optionally with the http header camouflage).</summary>
+        internal static string VmessTransportReason(string net, bool useTls)
+        {
+            if (net != "tcp") return "VMess over '" + net + "' — unsupported (raw TCP only)";
+            if (useTls) return "VMess over TLS — unsupported (raw TCP only)";
+            return null;
+        }
+
+        /// <summary>VLESS Encryption (encryption=mlkem768x25519plus…) isn't implemented; only "none" is.</summary>
+        internal static string EncryptionReason(string enc)
+        {
+            enc = (enc ?? "").Trim();
+            if (enc.Length == 0 || enc.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+            return "VLESS encryption '" + (enc.Length > 24 ? enc.Substring(0, 24) + "…" : enc) + "' — unsupported (only none)";
+        }
+
+        /// <summary>Re-classifies a VLESS/VMess profile from its own fields (after an edit): the same rules the share-link
+        /// parser applies to the transport/security/flow/REALITY fields the dialog can change. Null = runnable.</summary>
+        public static string ReasonForEditedProfile(ProxyProfile p)
+        {
+            string net = NormalizeNetwork(p.Network);
+            string sec = p.Reality ? "reality" : p.UseTls ? "tls" : "none";
+            if (p.Protocol == "vless")
+                return UnsupportedReason(net, sec, p.Flow, allowXhttp: true, allowReality: true) ?? RealityParamsReason(p) ?? HeaderComboReason(p);
+            if (p.Protocol == "vmess")
+                return UnsupportedReason(net, sec, null, allowXhttp: false, allowReality: false) ?? VmessTransportReason(net, p.UseTls);
+            return null;
+        }
+
+        /// <summary>True when an unsupported reason is one an edit of the REALITY / flow / security fields can cure.</summary>
+        public static bool IsRepairableReason(string reason)
+        {
+            reason = reason ?? "";
+            return reason.IndexOf("REALITY", StringComparison.OrdinalIgnoreCase) >= 0
+                || reason.IndexOf("XTLS", StringComparison.OrdinalIgnoreCase) >= 0
+                || reason.IndexOf("Vision", StringComparison.OrdinalIgnoreCase) >= 0
+                || reason.IndexOf("VMess over", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>REALITY and XTLS Vision run directly on tcp — not under the http-header camouflage (Xray: XTLS only
+        /// supports TLS and REALITY directly).</summary>
+        internal static string HeaderComboReason(ProxyProfile p)
+        {
+            if (p.HeaderType != "http") return null;
+            if (p.Reality) return "REALITY with the http header camouflage — unsupported";
+            if (Protocol.VlessProtocol.NormalizeFlow(p.Flow) == Protocol.VlessProtocol.FlowVision) return "XTLS Vision with the http header camouflage — unsupported";
             return null;
         }
 
@@ -202,7 +259,8 @@ namespace CS_Ray.Core.Config
             };
             if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
-            string reason = aid > 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported" : UnsupportedReason(net, tls, null, allowXhttp: false, allowReality: false);
+            string reason = aid > 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported"
+                          : UnsupportedReason(net, tls, null, allowXhttp: false, allowReality: false) ?? VmessTransportReason(net, p.UseTls);
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
         }
 

@@ -48,13 +48,21 @@ namespace CS_Ray.Core.Protocol
 
             // Dial the pinned IP when set (full tunnel), else the hostname. SNI/WS-Host stay the hostname.
             string dial = !string.IsNullOrEmpty(_cfg.ServerIp) ? _cfg.ServerIp : _cfg.ServerHost;
-            await outbound.ConnectAsync(dial, _cfg.ServerPort, ct).ConfigureAwait(false);
-            _outbound = outbound;
-            _server = outbound.GetStream();
-
-            var header = VlessProtocol.BuildRequestHeader(_uuid, dstHost, dstPort, VlessProtocol.CmdUdp);
-            await _server.WriteAsync(header, 0, header.Length, ct).ConfigureAwait(false);
-            await _server.FlushAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await outbound.ConnectAsync(dial, _cfg.ServerPort, ct).ConfigureAwait(false);
+                var server = outbound.GetStream();
+                var header = VlessProtocol.BuildRequestHeader(_uuid, dstHost, dstPort, VlessProtocol.CmdUdp);
+                await server.WriteAsync(header, 0, header.Length, ct).ConfigureAwait(false);
+                await server.FlushAsync(ct).ConfigureAwait(false);
+                _outbound = outbound;
+                _server = server;
+            }
+            catch
+            {
+                try { outbound.Close(); } catch { }   // a failed dial/handshake must not leave its socket to the GC
+                throw;
+            }
         }
 
         /// <summary>Send one UDP datagram (length-prefixed) to the associated destination.</summary>

@@ -1459,8 +1459,18 @@ namespace CS_Ray.UI
                 if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Result == null) return;
                 dlg.Result.Id = p.Id;        // edit in place
                 dlg.Result.Group = p.Group;  // keep its group (Manual or a sub)
-                dlg.Result.Unsupported = p.Unsupported;             // editing host/port can't make it runnable
-                dlg.Result.UnsupportedReason = p.UnsupportedReason;
+                if (p.Unsupported && LinkParser.IsRepairableReason(p.UnsupportedReason))
+                {
+                    // REALITY / flow / security problems are exactly what the dialog edits: re-judge the edited fields.
+                    string reason = LinkParser.ReasonForEditedProfile(dlg.Result);
+                    dlg.Result.Unsupported = reason != null;
+                    dlg.Result.UnsupportedReason = reason;
+                }
+                else
+                {
+                    dlg.Result.Unsupported = p.Unsupported;             // e.g. a grpc server: the dialog can't express it
+                    dlg.Result.UnsupportedReason = p.UnsupportedReason;
+                }
                 _store.Update(dlg.Result);
                 RefreshGroups();
                 for (int i = 0; i < _listProfiles.Items.Count; i++)
@@ -1788,7 +1798,8 @@ namespace CS_Ray.UI
             try { res = await Core.DelayTester.TestAsync(p.ToEngineConfig(), url, System.Threading.CancellationToken.None); }
             catch (Exception ex) { res = new DelayResult { Ok = false, Error = ex.Message }; }
             SetRowLatency(p.Id, ResultText(res));
-            Log("Delay " + LabelOf(p) + ": " + (res.Ok ? ("connect=" + res.ConnectMs + "ms total=" + res.TotalMs + "ms") : ("FAILED — " + res.Error)));
+            Log("Delay " + LabelOf(p) + ": " + (res.Ok ? ("connect=" + res.ConnectMs + "ms total=" + res.TotalMs + "ms")
+                                                     : ("FAILED — " + res.Error + (string.IsNullOrEmpty(res.Detail) ? "" : " (" + res.Detail + ")"))));
             _btnTest.Enabled = true; _btnTestAll.Enabled = true;
         }
 
@@ -1927,7 +1938,8 @@ namespace CS_Ray.UI
                 Log("Engine started: " + LabelOf(p) + " (" + config.Protocol + ") on 127.0.0.1:" + _activeListenPort + ".");
                 string proto = (config.Protocol ?? "").Trim().ToLowerInvariant();
                 bool xh = string.Equals(config.Network, "xhttp", StringComparison.OrdinalIgnoreCase);
-                if (proto == "vless" && config.Reality != null) Log("Security: REALITY (built-in TLS 1.3 client, independent of the TLS engine setting).");
+                if (proto == "vless" && config.Reality != null) Log("Security: REALITY" + (config.IsVision ? " + XTLS Vision" : "") + " (built-in TLS 1.3 client, independent of the TLS engine setting).");
+                else if (proto == "vless" && config.IsVision && config.UseTls) Log("Security: TLS 1.3 + XTLS Vision (built-in TLS 1.3 client — Vision needs it, whatever the TLS engine setting).");
                 else if ((proto == "vless" && (config.UseTls || xh)) || proto == "https") Log("TLS engine: " + TlsEngineLabel() + ".");
                 else if (proto == "vless") Log("Security: none (plain VLESS — no TLS).");
                 UpdateEngineDeps();

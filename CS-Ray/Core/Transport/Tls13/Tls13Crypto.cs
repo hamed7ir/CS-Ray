@@ -119,8 +119,14 @@ namespace CS_Ray.Core.Transport.Tls13
 
         private byte[] Nonce()
         {
+            var n = NonceFor(_seq);
+            _seq++;
+            return n;
+        }
+
+        private byte[] NonceFor(ulong seq)
+        {
             var n = (byte[])_iv.Clone();
-            ulong seq = _seq++;
             for (int i = 0; i < 8; i++) n[11 - i] ^= (byte)(seq >> (8 * i));
             return n;
         }
@@ -144,6 +150,27 @@ namespace CS_Ray.Core.Transport.Tls13
             int n = c.ProcessBytes(inner, 0, inner.Length, record, 5);
             c.DoFinal(record, 5 + n);
             return record;
+        }
+
+        /// <summary>Trial decryption: like <see cref="Open"/>, but a record that doesn't authenticate leaves the sequence
+        /// number untouched and returns false (used to recognise our peer's stray outer records in a raw stream).</summary>
+        public bool TryOpen(byte[] header5, byte[] body, out byte contentType, out byte[] content)
+        {
+            contentType = 0; content = null;
+            var c = NewCipher();
+            c.Init(false, new AeadParameters(new KeyParameter(_key), 128, NonceFor(_seq), header5));
+            var plain = new byte[c.GetOutputSize(body.Length)];
+            int n;
+            try { n = c.ProcessBytes(body, 0, body.Length, plain, 0); n += c.DoFinal(plain, n); }
+            catch (InvalidCipherTextException) { return false; }
+            _seq++;
+            int end = n - 1;
+            while (end >= 0 && plain[end] == 0) end--;
+            if (end < 0) return false;
+            contentType = plain[end];
+            content = new byte[end];
+            Buffer.BlockCopy(plain, 0, content, 0, end);
+            return true;
         }
 
         /// <summary>Decrypt a TLSCiphertext body; returns the inner content (padding stripped) and its real content type.</summary>
@@ -175,25 +202,27 @@ namespace CS_Ray.Core.Transport.Tls13
         /// <param name="signature">the signatureValue BIT STRING content without its unused-bits byte</param>
         public static void SplitCertificate(byte[] der, out byte[] spki, out byte[] signature)
         {
+            if (der == null || der.Length < 2) throw new Tls13Exception("TLS: truncated certificate");
             int p = 0;
-            int certEnd = Enter(der, ref p, 0x30);               // Certificate
-            int tbsEnd = Enter(der, ref p, 0x30);                // tbsCertificate
-            if (der[p] == 0xa0) Skip(der, ref p);                // [0] version
-            for (int i = 0; i < 5; i++) Skip(der, ref p);        // serial, signature alg, issuer, validity, subject
+            int certEnd = Enter(der, ref p, 0x30, der.Length);           // Certificate
+            int tbsEnd = Enter(der, ref p, 0x30, certEnd);               // tbsCertificate
+            if (p < tbsEnd && der[p] == 0xa0) Skip(der, ref p, tbsEnd);  // [0] version
+            for (int i = 0; i < 5; i++) Skip(der, ref p, tbsEnd);        // serial, signature alg, issuer, validity, subject
             int spkiStart = p;
-            Skip(der, ref p);
+            Skip(der, ref p, tbsEnd);
             spki = Slice(der, spkiStart, p - spkiStart);
             p = tbsEnd;
-            Skip(der, ref p);                                    // signatureAlgorithm
-            int sigEnd = Enter(der, ref p, 0x03);                // signatureValue BIT STRING
-            if (sigEnd > certEnd || p >= sigEnd) throw new Tls13Exception("TLS: malformed certificate");
+            Skip(der, ref p, certEnd);                                   // signatureAlgorithm
+            int sigEnd = Enter(der, ref p, 0x03, certEnd);               // signatureValue BIT STRING
+            if (p >= sigEnd) throw new Tls13Exception("TLS: malformed certificate");
             signature = Slice(der, p + 1, sigEnd - p - 1);
         }
 
-        // Reads a TLV header at p; returns the content end and leaves p at the content start.
-        private static int Header(byte[] d, ref int p, out byte tag)
+        // Reads a TLV header at p (which must lie before `limit`, the parent's end); returns the content end and leaves p at
+        // the content start. Every element must fit inside its parent.
+        private static int Header(byte[] d, ref int p, out byte tag, int limit)
         {
-            if (p + 2 > d.Length) throw new Tls13Exception("TLS: truncated certificate");
+            if (p + 2 > limit) throw new Tls13Exception("TLS: truncated certificate");
             tag = d[p++];
             int len = d[p++];
             if (len >= 0x80)
@@ -203,18 +232,18 @@ namespace CS_Ray.Core.Transport.Tls13
                 len = 0;
                 for (int i = 0; i < n; i++) len = (len << 8) | d[p++];
             }
-            if (p + len > d.Length) throw new Tls13Exception("TLS: truncated certificate");
+            if (len < 0 || p + len > limit) throw new Tls13Exception("TLS: truncated certificate");
             return p + len;
         }
 
-        private static int Enter(byte[] d, ref int p, byte expectTag)
+        private static int Enter(byte[] d, ref int p, byte expectTag, int limit)
         {
-            int end = Header(d, ref p, out byte tag);
+            int end = Header(d, ref p, out byte tag, limit);
             if (tag != expectTag) throw new Tls13Exception("TLS: unexpected certificate structure");
             return end;
         }
 
-        private static void Skip(byte[] d, ref int p) { p = Header(d, ref p, out _); }
+        private static void Skip(byte[] d, ref int p, int limit) { p = Header(d, ref p, out _, limit); }
 
         private static byte[] Slice(byte[] a, int off, int len) { var r = new byte[len]; Buffer.BlockCopy(a, off, r, 0, len); return r; }
     }

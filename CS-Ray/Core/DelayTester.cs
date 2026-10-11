@@ -20,6 +20,7 @@ namespace CS_Ray.Core
         public int ConnectMs;   // time to establish the proxied outbound transport (secondary)
         public int TotalMs;     // start → first response byte through the full chain (the "real delay")
         public string Error;    // "timeout" / "dead" / message when !Ok
+        public string Detail;   // the underlying failure (e.g. a REALITY / TLS diagnosis) for the log, when !Ok
     }
 
     /// <summary>
@@ -130,7 +131,7 @@ namespace CS_Ray.Core
                     string hostHdr = !string.IsNullOrEmpty(cfg.WsHost) ? cfg.WsHost
                         : (!string.IsNullOrEmpty(cfg.Sni) ? cfg.Sni : cfg.ServerHost);
                     ITransport o;
-                    if (xhttp) o = new XhttpTransport(cfg.Sni, cfg.AllowInsecure, cfg.WsPath, hostHdr);
+                    if (xhttp) o = new XhttpTransport(TlsTransportFactory.SniOrHost(cfg), cfg.AllowInsecure, cfg.WsPath, hostHdr);
                     else
                     {
                         o = TlsTransportFactory.CreateVlessSecurity(cfg); // REALITY / TLS / security=none → plain
@@ -140,9 +141,19 @@ namespace CS_Ray.Core
                     holder.Outbound = o;
                     await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);
                     r.ConnectMs = (int)sw.ElapsedMilliseconds;
-                    var header = VlessProtocol.BuildRequestHeader(uuid, tHost, tPort);
-                    await o.GetStream().WriteAsync(header, 0, header.Length, CancellationToken.None).ConfigureAwait(false);
-                    tunnel = new VlessStripStream(o.GetStream()); // strips the VLESS response header on first read
+                    if (cfg.IsVision && !xhttp && !ws)
+                    {
+                        // XTLS Vision: the header goes out with the first padded frame (the probe's HTTP request).
+                        var tls = (o as Transport.Tls13.Tls13Transport)?.Tls13
+                                  ?? throw new IOException("XTLS Vision needs REALITY or TLS over plain tcp");
+                        tunnel = new VisionStream(tls, uuid, VlessProtocol.BuildRequestHeader(uuid, tHost, tPort, VlessProtocol.CmdTcp, VlessProtocol.FlowVision));
+                    }
+                    else
+                    {
+                        var header = VlessProtocol.BuildRequestHeader(uuid, tHost, tPort);
+                        await o.GetStream().WriteAsync(header, 0, header.Length, CancellationToken.None).ConfigureAwait(false);
+                        tunnel = new VlessStripStream(o.GetStream()); // strips the VLESS response header on first read
+                    }
                 }
 
                 // For an https target, do TLS to the target THROUGH the tunnel (cert not validated — we only
@@ -169,7 +180,7 @@ namespace CS_Ray.Core
                 r.Ok = true;
                 return r;
             }
-            catch (Exception ex) { r.Ok = false; r.Error = Classify(ex); return r; }
+            catch (Exception ex) { r.Ok = false; r.Error = Classify(ex); r.Detail = Innermost(ex).Message; return r; }
             finally { holder.CloseQuiet(); }
         }
 
@@ -194,6 +205,12 @@ namespace CS_Ray.Core
             var h = new Holder { Outbound = probe };
             try { await ConnectBudgeted(probe, host, port, h).ConfigureAwait(false); }
             finally { h.CloseQuiet(); }
+        }
+
+        private static Exception Innermost(Exception ex)
+        {
+            while (ex is AggregateException ae && ae.InnerException != null) ex = ae.InnerException;
+            return ex;
         }
 
         private static string Classify(Exception ex)

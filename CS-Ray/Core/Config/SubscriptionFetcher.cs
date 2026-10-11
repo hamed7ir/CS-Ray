@@ -141,19 +141,28 @@ namespace CS_Ray.Core.Config
             bool inProxies = false;
             List<string> cur = null;
             var blocks = new List<List<string>>();
+            int itemIndent = -1;   // indent of the "- " that starts each proxy (YAML allows 0: "proxies:\n- name: a")
             foreach (var rawl in text.Replace("\r", "").Split('\n'))
             {
-                if (rawl.Length == 0) continue;
-                bool topLevel = !char.IsWhiteSpace(rawl[0]);
+                if (rawl.Trim().Length == 0) continue;
+                int indent = rawl.Length - rawl.TrimStart().Length;
                 string t = rawl.TrimStart();
-                if (topLevel)
+                if (t.StartsWith("#")) continue;
+                if (indent == 0 && !t.StartsWith("- "))
                 {
                     if (cur != null) { blocks.Add(cur); cur = null; }
                     inProxies = t.StartsWith("proxies:");
+                    itemIndent = -1;
                     continue;
                 }
                 if (!inProxies) continue;
-                if (t.StartsWith("- ")) { if (cur != null) blocks.Add(cur); cur = new List<string> { t.Substring(2) }; }
+                // A new proxy starts only at the item indent; deeper "- x" lines are nested lists (alpn:, path lists, …).
+                if (t.StartsWith("- ") && (itemIndent < 0 || indent == itemIndent))
+                {
+                    itemIndent = indent;
+                    if (cur != null) blocks.Add(cur);
+                    cur = new List<string> { t.Substring(2) };
+                }
                 else if (cur != null) cur.Add(t);
             }
             if (cur != null) blocks.Add(cur);
@@ -199,9 +208,9 @@ namespace CS_Ray.Core.Config
                     p.Protocol = "vmess"; p.Uuid = Get(kv, "uuid"); p.VmessSecurity = First(Get(kv, "cipher"), "auto");
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
                     string aid = Get(kv, "alterId");
-                    reason = reality ? "REALITY — needs native core, unsupported"
+                    reason = reality ? "REALITY (VMess) — unsupported (VLESS only)"
                            : (aid.Length > 0 && aid != "0") ? "VMess alterId>0 (legacy/non-AEAD) — unsupported"
-                           : TransportReason(rawNet);
+                           : TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet), p.UseTls);
                     break;
                 case "vless":
                     p.Protocol = "vless"; p.Uuid = Get(kv, "uuid");
@@ -212,11 +221,11 @@ namespace CS_Ray.Core.Config
                     {
                         // reality-opts: { public-key, short-id } — the flat block parse sees the nested keys too.
                         p.Reality = true; p.RealityPublicKey = Get(kv, "public-key"); p.RealityShortId = Get(kv, "short-id");
-                        p.Fingerprint = Get(kv, "client-fingerprint");
                     }
-                    reason = reality ? RealityReason(p, rawNet, flow)
-                           : flow.Length > 0 ? "XTLS flow '" + flow + "' — unsupported"
-                           : TransportReason(rawNet);
+                    p.Fingerprint = Get(kv, "client-fingerprint");
+                    reason = (reality ? RealityReason(p, rawNet, flow)
+                           : flow.Length > 0 ? VisionReason(p, rawNet, flow)
+                           : TransportReason(rawNet)) ?? LinkParser.EncryptionReason(Get(kv, "encryption"));
                     break;
                 case "ss":
                 case "shadowsocks":
@@ -237,12 +246,18 @@ namespace CS_Ray.Core.Config
         }
 
         // Transport (network) → unsupported reason for the managed engine (null = supported tcp/ws).
-        // VLESS + REALITY: same rules as share links (tcp only, no flow yet, valid pbk/sid).
+        // VLESS + REALITY: same rules as share links (tcp only, flow none or Vision, valid pbk/sid).
         private static string RealityReason(ProxyProfile p, string rawNet, string flow)
+            => LinkParser.UnsupportedReason(NetType(rawNet), "reality", flow, allowXhttp: true, allowReality: true) ?? LinkParser.RealityParamsReason(p);
+
+        // VLESS + a flow without REALITY: XTLS Vision over tls+tcp is supported, anything else isn't.
+        private static string VisionReason(ProxyProfile p, string rawNet, string flow)
+            => LinkParser.UnsupportedReason(NetType(rawNet), p.UseTls ? "tls" : "none", flow, allowXhttp: true, allowReality: true);
+
+        private static string NetType(string rawNet)
         {
             string n = (rawNet ?? "").ToLowerInvariant();
-            string type = n == "" || n == "raw" ? "tcp" : n == "splithttp" ? "xhttp" : n;
-            return LinkParser.UnsupportedReason(type, "reality", flow, allowXhttp: true, allowReality: true) ?? LinkParser.RealityParamsReason(p);
+            return n == "" || n == "raw" ? "tcp" : n == "splithttp" ? "xhttp" : n;
         }
 
         private static string TransportReason(string rawNet)
@@ -309,9 +324,9 @@ namespace CS_Ray.Core.Config
                 case "vmess":
                     p.Protocol = "vmess"; p.Uuid = JStr(d, "uuid"); p.VmessSecurity = First(JStr(d, "security"), "auto");
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
-                    reason = reality ? "REALITY — needs native core, unsupported"
+                    reason = reality ? "REALITY (VMess) — unsupported (VLESS only)"
                            : JInt(d, "alter_id") != 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported"
-                           : TransportReason(rawNet);
+                           : TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet), p.UseTls);
                     break;
                 case "vless":
                     p.Protocol = "vless"; p.Uuid = JStr(d, "uuid");
@@ -320,12 +335,12 @@ namespace CS_Ray.Core.Config
                     if (reality)
                     {
                         var ro = JObj(tls, "reality");
-                        var utls = JObj(tls, "utls");
                         p.Reality = true; p.RealityPublicKey = JStr(ro, "public_key"); p.RealityShortId = JStr(ro, "short_id");
-                        p.Fingerprint = utls != null ? JStr(utls, "fingerprint") : null;
                     }
+                    var utls = JObj(tls, "utls");
+                    p.Fingerprint = utls != null ? JStr(utls, "fingerprint") : null;
                     reason = reality ? RealityReason(p, rawNet, flow)
-                           : flow.Length > 0 ? "XTLS flow '" + flow + "' — unsupported"
+                           : flow.Length > 0 ? VisionReason(p, rawNet, flow)
                            : TransportReason(rawNet);
                     break;
                 case "shadowsocks":

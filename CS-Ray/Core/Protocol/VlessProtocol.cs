@@ -30,6 +30,20 @@ namespace CS_Ray.Core.Protocol
         public const byte CmdTcp = 0x01;
         public const byte CmdUdp = 0x02;
 
+        /// <summary>The only VLESS flow we speak (XTLS Vision). "xtls-rprx-vision-udp443" is an Xray client-side alias
+        /// that still sends this on the wire.</summary>
+        public const string FlowVision = "xtls-rprx-vision";
+
+        /// <summary>Normalizes a share-link / config flow: Vision (incl. its -udp443 alias) → <see cref="FlowVision"/>,
+        /// empty/"none" → null, anything else unchanged (and unsupported).</summary>
+        public static string NormalizeFlow(string flow)
+        {
+            string f = (flow ?? "").Trim().ToLowerInvariant();
+            if (f.Length == 0 || f == "none") return null;
+            if (f == FlowVision || f == FlowVision + "-udp443") return FlowVision;
+            return flow.Trim();
+        }
+
         /// <summary>Builds the VLESS request header for a TCP CONNECT to host:port.</summary>
         public static byte[] BuildRequestHeader(byte[] uuid, string host, int port)
         {
@@ -38,6 +52,11 @@ namespace CS_Ray.Core.Protocol
 
         /// <summary>Builds the VLESS request header with an explicit command (TCP=0x01, UDP=0x02).</summary>
         public static byte[] BuildRequestHeader(byte[] uuid, string host, int port, byte cmd)
+            => BuildRequestHeader(uuid, host, port, cmd, null);
+
+        /// <summary>Builds the VLESS request header; a non-null <paramref name="flow"/> goes into the addons
+        /// (protobuf Addons{Flow=1}: 0A len flow — Xray EncodeHeaderAddons).</summary>
+        public static byte[] BuildRequestHeader(byte[] uuid, string host, int port, byte cmd, string flow)
         {
             if (uuid == null || uuid.Length != 16)
                 throw new ArgumentException("UUID must be 16 bytes.", nameof(uuid));
@@ -71,7 +90,15 @@ namespace CS_Ray.Core.Protocol
             {
                 ms.WriteByte(0x00);                 // VER
                 ms.Write(uuid, 0, 16);              // UUID
-                ms.WriteByte(0x00);                 // addons length
+                if (string.IsNullOrEmpty(flow)) ms.WriteByte(0x00);   // addons length
+                else
+                {
+                    var f = Encoding.ASCII.GetBytes(flow);
+                    ms.WriteByte((byte)(f.Length + 2));             // addons length
+                    ms.WriteByte(0x0A);                             // field 1 (Flow), wire type 2
+                    ms.WriteByte((byte)f.Length);
+                    ms.Write(f, 0, f.Length);
+                }
                 ms.WriteByte(cmd);                  // CMD (0x01 TCP, 0x02 UDP)
                 ms.WriteByte((byte)(port >> 8));    // port hi
                 ms.WriteByte((byte)(port & 0xFF));  // port lo

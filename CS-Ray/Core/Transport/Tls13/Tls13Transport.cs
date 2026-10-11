@@ -75,6 +75,8 @@ namespace CS_Ray.Core.Transport.Tls13
             PatchHello = Seal,
             VerifyCertificates = Verify,
             CompressedCertificateError = "REALITY: the server answered with its camouflage target's real (compressed) certificate" + RejectedHint,
+            FailureHint = " (REALITY: the server may have rejected authentication and answered as its camouflage target — check pbk/sid, "
+                        + "that the SNI is in its serverNames, the clock, or try fp=chrome / fp=edge)",
         };
 
         private const string RejectedHint = " — authentication was rejected (wrong pbk/sid, SNI not in the server's serverNames, clock skew, "
@@ -108,7 +110,7 @@ namespace CS_Ray.Core.Transport.Tls13
         {
             byte[] spki, signature;
             try { Tls13Der.SplitCertificate(certs[0], out spki, out signature); }
-            catch (Tls13Exception) { return "REALITY: unparseable server certificate"; }
+            catch (Exception) { return "REALITY: unparseable server certificate"; }
             Ed25519PublicKeyParameters ed = null;
             try { ed = PublicKeyFactory.CreateKey(spki) as Ed25519PublicKeyParameters; } catch (Exception) { }
             if (ed == null) return "REALITY: the server answered with the real certificate of " + SubjectOf(certs[0]) + RejectedHint;
@@ -141,16 +143,23 @@ namespace CS_Ray.Core.Transport.Tls13
         private readonly string _sni;
         private readonly string _fingerprint;
         private readonly string[] _alpn;
+        private readonly bool _allowInsecure;
         private readonly TcpTransport _tcp = new TcpTransport();
         private Tls13Stream _stream;
 
         /// <summary>REALITY transport.</summary>
         public Tls13Transport(RealityConfig reality) { _reality = reality; _sni = reality.ServerName; _fingerprint = reality.Fingerprint; }
 
-        /// <summary>Plain validated TLS 1.3 with a browser-shaped hello.</summary>
-        public Tls13Transport(string sni, string fingerprint, string[] alpn) { _sni = sni; _fingerprint = fingerprint; _alpn = alpn; }
+        /// <summary>Plain TLS 1.3 with a browser-shaped hello; certificate validated unless <paramref name="allowInsecure"/>.</summary>
+        public Tls13Transport(string sni, string fingerprint, string[] alpn, bool allowInsecure = false)
+        {
+            _sni = sni; _fingerprint = fingerprint; _alpn = alpn; _allowInsecure = allowInsecure;
+        }
 
         public ushort CipherSuite => _stream?.CipherSuite ?? 0;
+
+        /// <summary>The connected TLS 1.3 stream (XTLS Vision needs its raw-switch hooks).</summary>
+        internal Tls13Stream Tls13 => _stream;
         public string NegotiatedAlpn => _stream?.NegotiatedAlpn;
 
         public async Task ConnectAsync(string host, int port, CancellationToken ct)
@@ -164,6 +173,7 @@ namespace CS_Ray.Core.Transport.Tls13
                 ServerName = serverName, Alpn = _alpn, Profile = ClientHelloBuilder.ProfileFor(_fingerprint),
                 VerifyCertificates = certs =>
                 {
+                    if (_allowInsecure) return null;   // CertificateVerify + Finished are still checked against the leaf
                     var inter = new List<byte[]>();
                     for (int i = 1; i < certs.Count; i++) inter.Add(certs[i]);
                     return TlsCertificateValidator.Validate(certs[0], inter, serverName);
@@ -174,6 +184,14 @@ namespace CS_Ray.Core.Transport.Tls13
             {
                 try { await stream.HandshakeAsync(ct).ConfigureAwait(false); }
                 catch (Exception) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }
+                catch (Exception)
+                {
+                    // Never leave a half-open socket behind (a rejected REALITY client is spliced to the target, which
+                    // would otherwise keep the connection alive until GC). Silent: no close_notify from a failed handshake.
+                    try { stream.Dispose(); } catch { }
+                    Close();
+                    throw;
+                }
             }
             ct.ThrowIfCancellationRequested();
             _stream = stream;

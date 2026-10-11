@@ -40,10 +40,10 @@ namespace CS_Ray.Core.Config
         public bool Reality;
         public string RealityPublicKey;  // pbk: the server's X25519 public key (base64url)
         public string RealityShortId;    // sid: 0–16 hex chars
-        public string Fingerprint;       // fp: uTLS fingerprint name (chrome / edge / …) — picks the ClientHello shape
+        public string Fingerprint;       // fp: uTLS fingerprint name (chrome / edge / …) — picks our ClientHello shape (REALITY, tls+Vision)
         public string SpiderX;           // spx: Xray's fallback-crawler path (camouflage only; kept for export)
-        /// <summary>VLESS flow (e.g. xtls-rprx-vision). Kept so the server stays exact; profiles with a flow are
-        /// unsupported until XTLS Vision lands.</summary>
+        /// <summary>VLESS flow: "xtls-rprx-vision" (XTLS Vision — tcp + tls/reality) or null. Other flows are kept
+        /// verbatim but leave the profile unsupported.</summary>
         public string Flow;
 
         public string SsMethod;
@@ -80,6 +80,8 @@ namespace CS_Ray.Core.Config
                     c.Uuid = Uuid;
                     c.UseTls = UseTls;   // security=tls vs none (was never passed → every VLESS server was dialed with TLS)
                     c.HeaderType = TcpHeader();
+                    c.Flow = CS_Ray.Core.Protocol.VlessProtocol.NormalizeFlow(Flow);
+                    c.Fingerprint = Fingerprint;
                     if (Reality)
                         c.Reality = new Transport.Tls13.RealityConfig
                         {
