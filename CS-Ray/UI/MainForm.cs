@@ -1920,7 +1920,9 @@ namespace CS_Ray.UI
                 _runningProfileId = p.Id; // the truly-active server (drives the list indicator + tray icon)
                 Log("Engine started: " + LabelOf(p) + " (" + config.Protocol + ") on 127.0.0.1:" + _activeListenPort + ".");
                 string proto = (config.Protocol ?? "").Trim().ToLowerInvariant();
-                if (proto == "vless" || proto == "https") Log("TLS engine: " + TlsEngineLabel() + ".");
+                bool xh = string.Equals(config.Network, "xhttp", StringComparison.OrdinalIgnoreCase);
+                if ((proto == "vless" && (config.UseTls || xh)) || proto == "https") Log("TLS engine: " + TlsEngineLabel() + ".");
+                else if (proto == "vless") Log("Security: none (plain VLESS — no TLS).");
                 UpdateEngineDeps();
             }
             catch (Exception ex)

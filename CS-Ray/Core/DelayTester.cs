@@ -127,7 +127,11 @@ namespace CS_Ray.Core
                         : (!string.IsNullOrEmpty(cfg.Sni) ? cfg.Sni : cfg.ServerHost);
                     ITransport o;
                     if (xhttp) o = new XhttpTransport(cfg.Sni, cfg.AllowInsecure, cfg.WsPath, hostHdr);
-                    else { o = TlsTransportFactory.Create(cfg.Sni, cfg.AllowInsecure); if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr); }
+                    else
+                    {
+                        o = cfg.UseTls ? TlsTransportFactory.Create(cfg.Sni, cfg.AllowInsecure) : new TcpTransport(); // security=none → plain
+                        if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr);
+                    }
                     holder.Outbound = o;
                     await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);
                     r.ConnectMs = (int)sw.ElapsedMilliseconds;

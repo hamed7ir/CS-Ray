@@ -23,6 +23,7 @@ namespace CS_Ray.Core
 
         // VLESS
         public string Uuid;           // VLESS user id
+        public bool UseTls = true;     // VLESS security: true = tls, false = none (plain VLESS over TCP/WS; xhttp is always TLS)
         public string Sni;            // TLS server name (defaults to ServerHost if empty)
         public bool AllowInsecure;    // skip certificate validation when true
         public string Network = "tcp"; // "tcp" (VLESS straight over TLS) or "ws" (VLESS over WebSocket-over-TLS)
@@ -119,10 +120,12 @@ namespace CS_Ray.Core
                             (string.IsNullOrEmpty(_config.ProxyUser) ? "" : " (auth)") +
                             " — TCP-carry only (DNS via engine; non-DNS UDP → TCP fallback).");
             else
-                Log?.Invoke("Outbound: VLESS network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") + "+TLS to " +
+                Log?.Invoke("Outbound: VLESS network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") +
+                            (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
                             _config.ServerHost + ":" + _config.ServerPort +
-                            " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) +
-                            ", allowInsecure=" + _config.AllowInsecure +
+                            (IsXhttp || _config.UseTls
+                                ? " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) + ", allowInsecure=" + _config.AllowInsecure
+                                : " (security=none") +
                             ((IsWebSocket || IsXhttp) ? ", path=" + _config.WsPath + ", host=" + WsHostHeader : "") + ")");
         }
 
@@ -174,13 +177,13 @@ namespace CS_Ray.Core
             var ct = _cts.Token;
 
             // Outbound chain: XHTTP manages its own TLS (two connections), so it is NOT wrapped over a shared
-            // TlsTransport; tcp/ws use TCP→TLS (+WebSocket on top when network=ws).
+            // TlsTransport; tcp/ws use TCP→TLS (security=tls) or plain TCP (security=none), +WebSocket when network=ws.
             ITransport outbound;
             if (IsXhttp)
                 outbound = new XhttpTransport(_config.Sni, _config.AllowInsecure, _config.WsPath, WsHostHeader, Verbose ? Log : null);
             else
             {
-                outbound = TlsTransportFactory.Create(_config.Sni, _config.AllowInsecure);
+                outbound = _config.UseTls ? TlsTransportFactory.Create(_config.Sni, _config.AllowInsecure) : new TcpTransport();
                 if (IsWebSocket)
                     outbound = new WebSocketTransport(outbound, _config.WsPath, WsHostHeader);
             }

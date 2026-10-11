@@ -64,6 +64,7 @@ namespace CS_Ray.Core.Config
             {
                 case "vless":
                     c.Uuid = Uuid;
+                    c.UseTls = UseTls;   // security=tls vs none (was never passed → every VLESS server was dialed with TLS)
                     break;
                 case "vmess":
                     c.VmessId = Uuid;
