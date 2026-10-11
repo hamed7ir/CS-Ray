@@ -33,13 +33,19 @@ namespace CS_Ray.UI
 
         public ToggleSwitch()
         {
-            Size = new Size(44, 24);
+            Size = new Size(DrawHelper.Px(44), DrawHelper.Px(24));   // 44x24 design px at the system DPI
             Cursor = Cursors.Hand;
-            TabStop = false;
+            TabStop = false;            // opt-in per use (a dialog form sets TabStop = true for keyboard access)
+            AccessibleRole = AccessibleRole.CheckButton;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
                      | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             ThemeHelper.ThemeChanged += OnThemeChanged;
         }
+
+        // Keyboard: Space flips it like a CheckBox (when it's a tab stop and focused).
+        protected override void OnKeyUp(KeyEventArgs e) { base.OnKeyUp(e); if (e.KeyCode == Keys.Space) { Checked = !Checked; e.Handled = true; } }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
 
         private void OnThemeChanged() { if (!IsDisposed && IsHandleCreated) { try { BeginInvoke((Action)Invalidate); } catch { } } }
 
@@ -57,8 +63,9 @@ namespace CS_Ray.UI
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            bool dark = ThemeHelper.IsDark;
-            Color accent = ThemeHelper.GetWindowsAccentColor();
+            var pal = ThemeHelper.Palette();
+            bool dark = pal.Dark;
+            Color accent = pal.Accent;
             g.Clear(Parent != null ? Parent.BackColor : (dark ? Color.FromArgb(48, 48, 48) : Color.White));
 
             var track = new Rectangle(0, 0, Width - 1, Height - 1);
@@ -73,10 +80,16 @@ namespace CS_Ray.UI
             using (var path = DrawHelper.RoundedRect(track, Height / 2))
                 g.FillPath(b, path);
 
-            int knob = Height - 8;
-            int kx = _checked ? Width - knob - 4 : 4;
+            int inset = Math.Max(2, Height / 6);   // 4px at the 24px design height
+            int knob = Height - 2 * inset;
+            int kx = _checked ? Width - knob - inset : inset;
             using (var b = new SolidBrush(Color.White))
-                g.FillEllipse(b, kx, 4, knob, knob);
+                g.FillEllipse(b, kx, inset, knob, knob);
+
+            if (Focused && ShowFocusCues)   // keyboard focus cue: a dotted ring just inside the track
+                using (var pen = new Pen(_checked ? Color.White : pal.AccentText, 1f) { DashStyle = DashStyle.Dot })
+                using (var path = DrawHelper.RoundedRect(Rectangle.Inflate(track, -2, -2), Math.Max(1, Height / 2 - 2)))
+                    g.DrawPath(pen, path);
         }
     }
 }

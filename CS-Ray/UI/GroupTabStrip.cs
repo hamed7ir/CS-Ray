@@ -3,13 +3,12 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
-using MaterialSkin;
 
 namespace CS_Ray.UI
 {
     /// <summary>
     /// Flat, owner-painted group tab strip (HotCornersWin's ScaledTabSelector approach): selected tab uses the
-    /// Material accent, inactive tabs are muted with grey text, a darker-accent indicator underlines the active
+    /// Windows accent, inactive tabs are muted with grey text, a darker-accent indicator underlines the active
     /// tab; hover highlight; click selects. Bound to a (hidden) backing <see cref="TabControl"/> so all existing
     /// group logic keeps driving it. Tabs that exceed the strip width SCROLL horizontally (mouse wheel, touch
     /// swipe via <see cref="TouchScroller"/>, and the selected tab auto-scrolls into view); edge fades hint more.
@@ -19,9 +18,9 @@ namespace CS_Ray.UI
         private TabControl _baseTabControl;
         private readonly List<Rectangle> _tabRects = new List<Rectangle>(); // CONTENT space (x from 0; offset by _scrollX)
         private readonly Font _font;
-        private const int IndicatorH = 3;
-        private const int TabPad = 14;
-        private const int FadeW = 16;
+        private static int IndicatorH => DrawHelper.Px(3);   // design px at the system DPI
+        private static int TabPad => DrawHelper.Px(14);
+        private static int FadeW => DrawHelper.Px(16);
         private int _hoverIndex = -1;
         private int _scrollX;        // horizontal scroll offset (content px scrolled off the left)
         private int _contentWidth;   // total width of all tabs
@@ -31,7 +30,7 @@ namespace CS_Ray.UI
 
         public GroupTabStrip(Font font)
         {
-            _font = font;            // keep our own ref — Control.Font gets reassigned by MaterialSkin once parented
+            _font = font;            // keep our own ref — painting never depends on the (ambient) Control.Font
             Font = font;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
                    | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
@@ -61,8 +60,6 @@ namespace CS_Ray.UI
                 Invalidate();
             }
         }
-
-        private static MaterialSkinManager Skin => MaterialSkinManager.Instance;
 
         private void OnBaseChanged(object sender, EventArgs e) { UpdateTabRects(); EnsureSelectedVisible(); Invalidate(); }
         protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); UpdateTabRects(); Invalidate(); }
@@ -98,12 +95,13 @@ namespace CS_Ray.UI
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
-            bool dark = Skin.Theme == MaterialSkinManager.Themes.DARK;
+            var pal = ThemeHelper.Palette();
+            bool dark = pal.Dark;
             Color inactiveBack = dark ? Color.FromArgb(50, 50, 50) : Color.FromArgb(224, 224, 224);
             Color inactiveText = dark ? Color.FromArgb(185, 185, 185) : Color.FromArgb(90, 90, 90);
-            Color activeBack = Skin.ColorScheme.PrimaryColor;
-            Color activeText = Color.White;
-            Color indicator = Skin.ColorScheme.DarkPrimaryColor;
+            Color activeBack = pal.Accent;
+            Color activeText = pal.OnAccent;
+            Color indicator = DrawHelper.Blend(activeBack, Color.Black, 0.25f); // darker accent
 
             g.Clear(inactiveBack);
             if (_baseTabControl == null) return;

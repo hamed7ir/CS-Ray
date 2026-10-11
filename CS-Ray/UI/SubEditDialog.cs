@@ -1,47 +1,30 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using MaterialSkin;
-using MaterialSkin.Controls;
 
 namespace CS_Ray.UI
 {
     /// <summary>
-    /// Tiny themed dialog to add / rename / re-point a subscription (Name + URL). MaterialForm with the full
-    /// accent action bar. Used by the Subscriptions tab "Add"/"Edit" and the tab right-click "Rename…".
+    /// Tiny themed dialog to add / rename / re-point a subscription (Name + URL). A <see cref="ThemedDialog"/> (accent
+    /// title bar + OK/Cancel footer). Used by the Subscriptions tab "Add"/"Edit" and the tab right-click "Rename…".
     /// </summary>
-    public sealed class SubEditDialog : MaterialForm
+    public sealed class SubEditDialog : ThemedDialog
     {
-        private const int X = 24, FieldW = 422, FieldGap = 64;
-
-        private readonly MaterialTextBox2 _txtName, _txtUrl;
-        private readonly MaterialButton _btnOk, _btnCancel;
+        private readonly ThemedTextBox _txtName, _txtUrl;
+        private readonly RoundedButton _btnOk, _btnCancel;
 
         public string ResultName { get; private set; }
         public string ResultUrl { get; private set; }
 
-        public SubEditDialog(string title, string name, string url)
+        public SubEditDialog(string title, string name, string url) : base(title)
         {
-            var skin = MaterialSkinManager.Instance;
-            skin.AddFormToManage(this);
-            if (IconHelper.App != null) Icon = IconHelper.App; // window icon (taskbar / Alt-Tab)
-            skin.Theme = ThemeHelper.IsDark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var win = ThemeHelper.GetWindowsAccentColor();
-            var accent = (Primary)(uint)win.ToArgb();
-            // Singleton-trap fix: the MaterialSkin Accent slot carries the SAME Windows accent, not LightBlue200.
-            skin.ColorScheme = new ColorScheme(accent, accent, accent, (Accent)(uint)win.ToArgb(), TextShade.WHITE);
+            _txtName = new ThemedTextBox { Hint = "Name", Text = name ?? "" };
+            _txtUrl = new ThemedTextBox { Hint = "Subscription URL", Text = url ?? "" };
+            Body.Host.Controls.Add(_txtName);
+            Body.Host.Controls.Add(_txtUrl);
 
-            Text = title;                       // shown in the full accent action bar
-            AutoScaleMode = AutoScaleMode.Font;
-            Font = FontHelper.Ui(9f);
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = false; MinimizeBox = false; Sizable = false;
-
-            _txtName = new MaterialTextBox2 { Hint = "Name", Text = name ?? "", Width = FieldW };
-            _txtUrl = new MaterialTextBox2 { Hint = "Subscription URL", Text = url ?? "", Width = FieldW };
-            _btnOk = new MaterialButton { Text = "OK", Type = MaterialButton.MaterialButtonType.Contained, AutoSize = false, Width = 100, Height = 36 };
-            _btnCancel = new MaterialButton { Text = "Cancel", Type = MaterialButton.MaterialButtonType.Outlined, AutoSize = false, Width = 100, Height = 36 };
-
+            _btnOk = AddFooterButton("OK", RoundedButtonKind.Primary);               // rightmost
+            _btnCancel = AddFooterButton("Cancel", RoundedButtonKind.Secondary, DialogResult.Cancel);
             _btnOk.Click += (s, e) =>
             {
                 var u = (_txtUrl.Text ?? "").Trim();
@@ -51,30 +34,18 @@ namespace CS_Ray.UI
                 DialogResult = DialogResult.OK;
                 Close();
             };
-            _btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
-
-            Controls.Add(_txtName);
-            Controls.Add(_txtUrl);
-            Controls.Add(_btnOk);
-            Controls.Add(_btnCancel);
             AcceptButton = _btnOk; CancelButton = _btnCancel;
 
             Relayout();
         }
 
-        // MaterialForm reserves its accent action bar via Padding.Top (fallback 64 before it's known).
-        private int TopInset => Math.Max(64, Padding.Top);
-
-        protected override void OnLoad(EventArgs e) { base.OnLoad(e); Relayout(); }
-
         private void Relayout()
         {
-            int y = TopInset + 12;
-            _txtName.Location = new Point(X, y); y += FieldGap;
-            _txtUrl.Location = new Point(X, y); y += FieldGap;      // clears the URL field — no overlap
-            _btnOk.Location = new Point(470 - X - _btnOk.Width, y);
-            _btnCancel.Location = new Point(_btnOk.Left - 8 - _btnCancel.Width, y);
-            ClientSize = new Size(470, y + _btnOk.Height + 16);
+            int x = DrawHelper.Px(24), w = DrawHelper.Px(470), gap = DrawHelper.Px(12);
+            int y = DrawHelper.Px(14);
+            _txtName.SetBounds(x, y, w - 2 * x, 0); y += _txtName.Height + gap;
+            _txtUrl.SetBounds(x, y, w - 2 * x, 0); y += _txtUrl.Height + DrawHelper.Px(6);
+            FitToContent(w, y);
         }
     }
 }

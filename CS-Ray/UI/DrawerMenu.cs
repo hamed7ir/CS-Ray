@@ -23,8 +23,11 @@ namespace CS_Ray.UI
             public bool IsDanger, Separator;
         }
 
-        public const int CardW = 288;
-        private const int HeaderH = 76, RowH = 46, SepH = 11;
+        /// <summary>Card width: 288 design px at the system DPI.</summary>
+        public static int CardW => DrawHelper.Px(288);
+
+        // Font-derived row/header metrics (set in the ctor once the fonts exist) — nothing clips at 125-200%.
+        private readonly int HeaderH, RowH, SepH;
 
         private readonly bool _dark;
         private readonly Color _accent;
@@ -47,6 +50,9 @@ namespace CS_Ray.UI
             _fGlyph = FontHelper.Ui(12.5f);
             _fLabel = FontHelper.Ui(10.5f);
             _fValue = FontHelper.Ui(9f);
+            HeaderH = DrawHelper.Px(14) + _fTitle.Height + DrawHelper.Px(2) + _fSub.Height + DrawHelper.Px(14);
+            RowH = Math.Max(DrawHelper.Px(46), Math.Max(_fLabel.Height, _fGlyph.Height) + DrawHelper.Px(20));
+            SepH = DrawHelper.Px(11);
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
                      | ControlStyles.OptimizedDoubleBuffer | ControlStyles.Selectable, true);
             TabStop = false;
@@ -66,14 +72,14 @@ namespace CS_Ray.UI
 
         private void Layout2()
         {
-            int y = HeaderH + 6;
+            int y = HeaderH + DrawHelper.Px(6);
             for (int i = 0; i < _rows.Count; i++)
             {
                 int h = _rows[i].Separator ? SepH : RowH;
                 _rects[i] = new Rectangle(0, y, CardW, h);
                 y += h;
             }
-            _contentH = y + 6;
+            _contentH = y + DrawHelper.Px(6);
             _scrollY = Math.Min(_scrollY, MaxScroll());
         }
 
@@ -91,7 +97,7 @@ namespace CS_Ray.UI
             base.OnMouseMove(e);
             if (_pressed)   // touch/mouse drag-scroll over the rows
             {
-                if (Math.Abs(e.Y - _pressY) > 6) _moved = true;
+                if (Math.Abs(e.Y - _pressY) > DrawHelper.Px(6)) _moved = true;
                 if (_moved) { _scrollY = ClampScroll(_pressScroll - (e.Y - _pressY)); Invalidate(); }
                 return;
             }
@@ -144,10 +150,12 @@ namespace CS_Ray.UI
 
             // Accent header: app title + subtitle.
             using (var hb = new SolidBrush(_accent)) g.FillRectangle(hb, 0, 0, CardW, HeaderH);
-            TextRenderer.DrawText(g, _title, _fTitle, new Rectangle(20, 14, CardW - 32, 26), Color.White,
+            int hx = DrawHelper.Px(20), hw = CardW - DrawHelper.Px(32), ty = DrawHelper.Px(14);
+            Color on = ThemePalette.OnColor(_accent);
+            TextRenderer.DrawText(g, _title, _fTitle, new Rectangle(hx, ty, hw, _fTitle.Height), on,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             if (!string.IsNullOrEmpty(_subtitle))
-                TextRenderer.DrawText(g, _subtitle, _fSub, new Rectangle(20, 42, CardW - 32, 20), Color.FromArgb(224, 232, 242),
+                TextRenderer.DrawText(g, _subtitle, _fSub, new Rectangle(hx, ty + _fTitle.Height + DrawHelper.Px(2), hw, _fSub.Height), DrawHelper.Blend(on, _accent, 0.2f),
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
             // Rows (scroll under the fixed header).
@@ -164,7 +172,7 @@ namespace CS_Ray.UI
                 if (row.Separator)
                 {
                     using (var p = new Pen(_dark ? Color.FromArgb(52, 52, 56) : Color.FromArgb(232, 232, 236)))
-                        g.DrawLine(p, 16, r.Y + r.Height / 2, CardW - 16, r.Y + r.Height / 2);
+                        g.DrawLine(p, DrawHelper.Px(16), r.Y + r.Height / 2, CardW - DrawHelper.Px(16), r.Y + r.Height / 2);
                     continue;
                 }
                 if (_hover == i)
@@ -172,12 +180,13 @@ namespace CS_Ray.UI
                         g.FillRectangle(hb, r);
                 Color rowFg = row.IsDanger ? danger : fg;
                 if (!string.IsNullOrEmpty(row.Glyph))
-                    TextRenderer.DrawText(g, row.Glyph, _fGlyph, new Rectangle(16, r.Y, 30, r.Height), rowFg,
+                    TextRenderer.DrawText(g, row.Glyph, _fGlyph, new Rectangle(DrawHelper.Px(16), r.Y, DrawHelper.Px(30), r.Height), rowFg,
                         TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-                TextRenderer.DrawText(g, row.Label, _fLabel, new Rectangle(52, r.Y, CardW - 52 - 16, r.Height), rowFg,
+                int lx = DrawHelper.Px(52), vw = string.IsNullOrEmpty(row.Value) ? 0 : DrawHelper.Px(116);
+                TextRenderer.DrawText(g, row.Label, _fLabel, new Rectangle(lx, r.Y, CardW - lx - DrawHelper.Px(16) - vw, r.Height), rowFg,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
                 if (!string.IsNullOrEmpty(row.Value))
-                    TextRenderer.DrawText(g, row.Value, _fValue, new Rectangle(CardW - 132, r.Y, 116, r.Height), dim,
+                    TextRenderer.DrawText(g, row.Value, _fValue, new Rectangle(CardW - DrawHelper.Px(16) - vw, r.Y, vw, r.Height), dim,
                         TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             }
             g.Clip = savedClip;

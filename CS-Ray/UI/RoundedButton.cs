@@ -10,7 +10,7 @@ namespace CS_Ray.UI
     public enum RoundedButtonKind { Primary, Secondary, Neutral, Danger }
 
     /// <summary>
-    /// A rounded, accent-aware button that matches the MaterialButton look (rounded + live Windows accent) but keeps
+    /// A rounded, accent-aware button (rounded + live Windows accent; the app's standard button) that keeps
     /// STANDARD Button metrics and text casing (no uppercase, no ripple, no auto-height) so it drops into existing
     /// pixel layouts without shifting them. Reads the accent + dark/light from <see cref="ThemeHelper"/> and
     /// recolours live on <see cref="ThemeHelper.ThemeChanged"/>. Ported from TelegArm's RoundedButton (kept in the
@@ -24,7 +24,7 @@ namespace CS_Ray.UI
     public sealed class RoundedButton : Button
     {
         private RoundedButtonKind _kind = RoundedButtonKind.Primary;
-        private int _radius = 8;
+        private int _radius = DrawHelper.Px(8);
         private bool _hover, _down;
 
         public RoundedButtonKind Kind { get { return _kind; } set { _kind = value; Invalidate(); } }
@@ -52,13 +52,16 @@ namespace CS_Ray.UI
         protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
         protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            bool dark = ThemeHelper.IsDark;
-            Color accent = ThemeHelper.GetWindowsAccentColor();
+            var pal = ThemeHelper.Palette();
+            bool dark = pal.Dark;
+            Color accent = pal.Accent;
             Color pbg = Parent != null ? Parent.BackColor : (dark ? Color.FromArgb(48, 48, 48) : Color.White);
             g.Clear(pbg);   // so the rounded corners reveal the surface behind, not a square in the wrong shade
 
@@ -70,10 +73,10 @@ namespace CS_Ray.UI
                 case RoundedButtonKind.Neutral:
                     fill = dark ? Color.FromArgb(60, 60, 64) : Color.FromArgb(234, 234, 238);
                     text = dark ? Color.FromArgb(230, 230, 234) : Color.FromArgb(35, 35, 40); break;
-                case RoundedButtonKind.Secondary:
-                    fill = pbg; text = accent; border = accent; break;
+                case RoundedButtonKind.Secondary:   // outline + text on the surface → the contrast-safe accent
+                    fill = pbg; text = pal.AccentText; border = pal.AccentText; break;
                 default:   // Primary
-                    fill = accent; text = Color.White; break;
+                    fill = accent; text = pal.OnAccent; break;
             }
 
             if (!Enabled)
@@ -83,7 +86,7 @@ namespace CS_Ray.UI
                 border = Color.Empty;
             }
             else if (_down) fill = Blend(fill, Color.Black, 0.16f);
-            else if (_hover) fill = _kind == RoundedButtonKind.Secondary ? Blend(pbg, accent, 0.12f)
+            else if (_hover) fill = _kind == RoundedButtonKind.Secondary ? Blend(pbg, pal.AccentText, 0.12f)
                                                                          : Blend(fill, Color.White, dark ? 0.10f : 0.06f);
 
             var r = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
@@ -92,6 +95,10 @@ namespace CS_Ray.UI
                 using (var b = new SolidBrush(fill)) g.FillPath(b, path);
                 if (border != Color.Empty && Enabled) using (var p = new Pen(border, 1.4f)) g.DrawPath(p, path);
             }
+            if (Focused && ShowFocusCues && Enabled)   // keyboard focus cue (only after keyboard navigation)
+                using (var fp = RoundedRect(Rectangle.Inflate(r, -3, -3), Math.Max(1, _radius - 3)))
+                using (var pen = new Pen(text, 1f) { DashStyle = DashStyle.Dot })
+                    g.DrawPath(pen, fp);
             var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
             bool left = TextAlign == ContentAlignment.MiddleLeft || TextAlign == ContentAlignment.TopLeft || TextAlign == ContentAlignment.BottomLeft;
             bool right = TextAlign == ContentAlignment.MiddleRight || TextAlign == ContentAlignment.TopRight || TextAlign == ContentAlignment.BottomRight;

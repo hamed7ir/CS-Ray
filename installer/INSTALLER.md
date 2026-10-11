@@ -48,7 +48,7 @@ installer/Output/
 
 ## How it works
 
-1. **`build.ps1`** stages the payload **FLAT** — `CS-Ray.exe` + `.config` + `MaterialSkin.dll` +
+1. **`build.ps1`** stages the payload **FLAT** — `CS-Ray.exe` + `.config` +
    `BouncyCastle.Crypto.dll` + `wintun\<arch>\` + LICENSE/NOTICES **all beside each other** (CS-Ray's App.config has
    no `<probing privatePath>`, and `wintun.dll` is located by the app's own BaseDirectory path — so nothing goes in a
    `dll\` subfolder). Zips it → `payload.zip`. Compiles `Setup.cs` with `csc /platform:anycpu` (MSIL). Zips

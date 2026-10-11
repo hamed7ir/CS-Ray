@@ -1,39 +1,28 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using MaterialSkin;
-using MaterialSkin.Controls;
 
 namespace CS_Ray.UI
 {
     /// <summary>
-    /// Tabbed settings window. MaterialForm with the FULL accent action bar (like the main window). Two flat
-    /// group-style tabs (General / Subscriptions) using the same <see cref="GroupTabStrip"/> as the main form —
-    /// NOT MaterialButton pills. It owns no logic: MainForm fills <see cref="GeneralPage"/> / <see cref="SubsPage"/>
-    /// with its already-wired controls. Created once and re-shown (never disposed) so hosted controls persist.
+    /// Tabbed settings window: a <see cref="ThemedDialog"/> (accent title bar + Close footer) with two flat group-style
+    /// tabs (General / Subscriptions) using the same <see cref="GroupTabStrip"/> as the main form. Each page is a
+    /// <see cref="ThemedScrollPanel"/> (owner-drawn scrollbar — RT 8.1's native one can't go dark). It owns no logic:
+    /// MainForm fills <see cref="GeneralPage"/> / <see cref="SubsPage"/> (the scroll panels' hosts) with its
+    /// already-wired controls. Created once and re-shown (never disposed) so hosted controls persist.
     /// </summary>
-    public sealed class SettingsPopup : MaterialForm
+    public sealed class SettingsPopup : ThemedDialog
     {
-        private readonly MaterialSkinManager _skin;
         private readonly TabControl _tabs;       // hidden backing model for the strip
         private readonly GroupTabStrip _strip;
         private readonly Panel _host;
+        private readonly ThemedScrollPanel _genScroll, _subsScroll;
 
-        public Panel GeneralPage { get; }
-        public Panel SubsPage { get; }
+        public Panel GeneralPage => _genScroll.Host;
+        public Panel SubsPage => _subsScroll.Host;
 
-        public SettingsPopup()
+        public SettingsPopup() : base("CS-Ray — Settings", scrollBody: false)
         {
-            _skin = MaterialSkinManager.Instance;
-            _skin.AddFormToManage(this);
-            if (IconHelper.App != null) Icon = IconHelper.App; // window icon (taskbar / Alt-Tab)
-
-            Text = "CS-Ray — Settings";            // shown in the accent action bar
-            AutoScaleMode = AutoScaleMode.Font;
-            Font = FontHelper.Ui(9f);
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = false; MinimizeBox = false; Sizable = false;
-            ClientSize = new Size(600, 640);
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) Hide(); };
 
@@ -44,27 +33,25 @@ namespace CS_Ray.UI
             Controls.Add(_tabs);
 
             _host = new Panel { Dock = DockStyle.Fill }; // added first → docks last, takes leftover space
-            Controls.Add(_host);
+            Content.Controls.Add(_host);
 
-            var top = new Panel { Dock = DockStyle.Top, Height = 38 };
-            _strip = new GroupTabStrip(FontHelper.Ui(10f, FontStyle.Bold)) { Dock = DockStyle.Fill };
+            var tabFont = FontHelper.Ui(10f, FontStyle.Bold);
+            var top = new Panel { Dock = DockStyle.Top, Height = Math.Max(DrawHelper.Px(38), tabFont.Height + DrawHelper.Px(18)) };
+            _strip = new GroupTabStrip(tabFont) { Dock = DockStyle.Fill };
             _strip.BaseTabControl = _tabs;
             _strip.SelectedTabChanged += (s, e) => ShowPage();
             top.Controls.Add(_strip);
-            Controls.Add(top);
+            Content.Controls.Add(top);
 
-            var footer = new Panel { Dock = DockStyle.Bottom, Height = 50 };
-            var close = new MaterialButton { Text = "Close", Type = MaterialButton.MaterialButtonType.Contained, AutoSize = false, Width = 100, Height = 36 };
+            var close = AddFooterButton("Close", RoundedButtonKind.Primary);
             close.Click += (s, e) => Hide();
-            footer.Resize += (s, e) => close.Location = new Point(footer.ClientSize.Width - 116, 8);
-            footer.Controls.Add(close);
-            Controls.Add(footer);
 
-            GeneralPage = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Visible = true };
-            SubsPage = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Visible = false };
-            _host.Controls.Add(GeneralPage);
-            _host.Controls.Add(SubsPage);
+            _genScroll = new ThemedScrollPanel { Dock = DockStyle.Fill, Visible = true };
+            _subsScroll = new ThemedScrollPanel { Dock = DockStyle.Fill, Visible = false };
+            _host.Controls.Add(_genScroll);
+            _host.Controls.Add(_subsScroll);
 
+            ClientSize = new Size(DrawHelper.Px(600), DrawHelper.Px(640));   // pages are laid out in DrawHelper.Px too
             _tabs.SelectedIndex = 0;
 
             ApplyTheme();
@@ -76,33 +63,36 @@ namespace CS_Ray.UI
         private void ShowPage()
         {
             bool gen = _tabs.SelectedIndex == 0;
-            GeneralPage.Visible = gen;
-            SubsPage.Visible = !gen;
-            if (gen) GeneralPage.BringToFront(); else SubsPage.BringToFront();
+            _genScroll.Visible = gen;
+            _subsScroll.Visible = !gen;
+            if (gen) _genScroll.BringToFront(); else _subsScroll.BringToFront();
         }
 
         private void ApplyTheme()
         {
-            _skin.Theme = ThemeHelper.IsDark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var win = ThemeHelper.GetWindowsAccentColor();
-            var accent = (Primary)(uint)win.ToArgb();
-            // Singleton-trap fix: the MaterialSkin Accent slot carries the SAME Windows accent, not LightBlue200.
-            _skin.ColorScheme = new ColorScheme(accent, accent, accent, (Accent)(uint)win.ToArgb(), TextShade.WHITE);
             ThemeHelper.RecolorBody(_host);
             _strip.Invalidate();
         }
 
         private void OnThemeChanged()
         {
-            if (IsDisposed) return;
+            if (IsDisposed || !IsHandleCreated) return;   // closed → Open() recolors the pages before showing
             try { BeginInvoke((Action)(() => { ApplyTheme(); Invalidate(true); })); } catch { }
         }
 
         /// <summary>Show modally on the General tab.</summary>
         public void Open(IWin32Window owner)
         {
+            // Re-clamp per open (the owner may be on another monitor): never taller than ~92% of the work area —
+            // the pages scroll instead of the Close footer falling off-screen.
+            Rectangle wa;
+            try { wa = owner is Control oc ? Screen.FromControl(oc).WorkingArea : Screen.FromPoint(Cursor.Position).WorkingArea; }
+            catch { wa = Screen.PrimaryScreen.WorkingArea; }
+            ClientSize = new Size(DrawHelper.Px(600), Math.Min(DrawHelper.Px(640), (int)(wa.Height * 0.92)));
             _tabs.SelectedIndex = 0;
             ShowPage();
+            _genScroll.RelayoutContent();
+            _subsScroll.RelayoutContent();
             ThemeHelper.RecolorBody(_host);
             _strip.Invalidate();
             ShowDialog(owner);

@@ -53,17 +53,6 @@ components.
 
 ---
 
-## MaterialSkin.2
-
-- **Component:** MaterialSkin.2, version 2.3.1 — Material Design theming for WinForms.
-- **Author:** Ignace Maes and contributors.
-- **License:** **MIT License**.
-- **Obtained via:** NuGet (`MaterialSkin.2`), not vendored as source.
-- **License text:** <https://github.com/IgnaceMaes/MaterialSkin/blob/master/LICENSE>
-- **Project:** <https://github.com/IgnaceMaes/MaterialSkin>
-
----
-
 ## Roboto (font)
 
 - **Component:** Roboto (Regular, Medium, Bold) — embedded as resources

@@ -20,6 +20,7 @@ namespace CS_Ray.Core.Config
             public string DelayTestUrl { get; set; }
             public List<Subscription> Subscriptions { get; set; }
             public string ThemeMode { get; set; }
+            public string AccentColor { get; set; }
             public bool BlockQuic { get; set; }
         }
 
@@ -36,6 +37,9 @@ namespace CS_Ray.Core.Config
 
         /// <summary>Persisted theme: "System" | "Dark" | "Light" (null = System).</summary>
         public string ThemeMode { get; set; }
+
+        /// <summary>Persisted accent override "#RRGGBB" (null/empty = follow the Windows accent).</summary>
+        public string AccentColor { get; set; }
 
         /// <summary>Persisted Block-QUIC (UDP/443 drop) preference.</summary>
         public bool BlockQuic { get; set; }
@@ -135,6 +139,7 @@ namespace CS_Ray.Core.Config
                 DelayTestUrl = data?.DelayTestUrl;
                 Subscriptions = data?.Subscriptions ?? new List<Subscription>();
                 ThemeMode = data?.ThemeMode;
+                AccentColor = data?.AccentColor;
                 BlockQuic = data?.BlockQuic ?? false;
             }
             catch
@@ -156,6 +161,7 @@ namespace CS_Ray.Core.Config
                     DelayTestUrl = DelayTestUrl,
                     Subscriptions = Subscriptions,
                     ThemeMode = ThemeMode,
+                    AccentColor = AccentColor,
                     BlockQuic = BlockQuic
                 });
                 File.WriteAllText(_path, json);

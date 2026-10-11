@@ -95,6 +95,16 @@
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="UI\ThemeHelper.cs" />
+    <Compile Include="UI\ThemedChrome.cs" />
+    <Compile Include="UI\ThemedForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\ThemedDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="UI\ThemedScrollPanel.cs" />
+    <Compile Include="UI\ThemedTextBox.cs" />
+    <Compile Include="UI\ThemedComboBox.cs" />
     <Compile Include="UI\RoundedButton.cs" />
     <Compile Include="UI\DrawHelper.cs" />
     <Compile Include="UI\ToggleSwitch.cs" />
@@ -134,7 +144,6 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Portable.BouncyCastle" Version="1.9.0" />
-    <PackageReference Include="MaterialSkin.2" Version="2.3.1" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Fonts\Roboto-Regular.ttf" />

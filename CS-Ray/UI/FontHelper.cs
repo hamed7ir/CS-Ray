@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 namespace CS_Ray.UI
 {
     /// <summary>
-    /// Bundles Roboto (MaterialSkin's intended typeface) as embedded fonts loaded into a process-wide
+    /// Bundles Roboto (the app's typeface) as embedded fonts loaded into a process-wide
     /// <see cref="PrivateFontCollection"/>, so the GUI renders in Roboto without installing fonts. Ported from
     /// TelegArm's FontHelper: GDI+ does NOT copy the buffer passed to AddMemoryFont, so the native buffer must
     /// stay allocated for the app's lifetime (we intentionally never free it). Falls back to Segoe UI on failure.

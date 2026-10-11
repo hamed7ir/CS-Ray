@@ -3,108 +3,93 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Reflection;
 using System.Windows.Forms;
-using MaterialSkin;
-using MaterialSkin.Controls;
 
 namespace CS_Ray.UI
 {
     /// <summary>
-    /// Themed About dialog (MaterialForm, accent action bar + app icon): the app icon, name + version, a short
-    /// description, a strong PRIVACY note (collects zero data / sends nothing), the GPL/license line, and a clickable
-    /// GitHub link. Replaces the old plain MessageBox. Follows the SubEditDialog layout pattern (absolute positions
-    /// offset by the action-bar TopInset); plain Labels take the MaterialSkin background so they blend with the form.
+    /// Themed About dialog (<see cref="ThemedDialog"/>: accent title bar + footer): the app icon, name + version, a
+    /// short description, a strong PRIVACY note (collects zero data / sends nothing), the GPL/license line, and a
+    /// clickable GitHub link. Centered rows at absolute positions in the body; recolors live with the theme.
     /// </summary>
-    public sealed class AboutDialog : MaterialForm
+    public sealed class AboutDialog : ThemedDialog
     {
         private const string RepoUrl = "https://github.com/hamed7ir/CS-Ray";
 
         private readonly PictureBox _pic;
         private readonly Label _name, _ver, _desc, _privacy, _license;
         private readonly LinkLabel _link;
-        private readonly MaterialButton _btnClose;
+        private readonly RoundedButton _btnClose;
 
-        public AboutDialog()
+        public AboutDialog() : base("About CS-Ray")
         {
-            var skin = MaterialSkinManager.Instance;
-            skin.AddFormToManage(this);
-            if (IconHelper.App != null) Icon = IconHelper.App;
-            skin.Theme = ThemeHelper.IsDark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var win = ThemeHelper.GetWindowsAccentColor();
-            var accent = (Primary)(uint)win.ToArgb();
-            skin.ColorScheme = new ColorScheme(accent, accent, accent, (Accent)(uint)win.ToArgb(), TextShade.WHITE);
-
-            Text = "About CS-Ray";
-            AutoScaleMode = AutoScaleMode.Font;
-            Font = FontHelper.Ui(9f);
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = false; MinimizeBox = false; Sizable = false;
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) Close(); };
 
-            bool dark = ThemeHelper.IsDark;
-            Color bg = skin.BackgroundColor;                                             // match the form body exactly
-            Color fg = dark ? Color.FromArgb(232, 232, 236) : Color.FromArgb(33, 33, 38);
-            Color dim = dark ? Color.FromArgb(150, 150, 158) : Color.FromArgb(120, 120, 128);
-            Color safe = dark ? Color.FromArgb(104, 190, 130) : Color.FromArgb(38, 140, 86); // trust green for privacy
+            _pic = new PictureBox { Size = new Size(DrawHelper.Px(76), DrawHelper.Px(76)), SizeMode = PictureBoxSizeMode.StretchImage };
+            try { if (IconHelper.App != null) _pic.Image = new Icon(IconHelper.App, _pic.Width, _pic.Height).ToBitmap(); } catch { }
 
-            _pic = new PictureBox { Size = new Size(76, 76), SizeMode = PictureBoxSizeMode.StretchImage, BackColor = bg };
-            try { if (IconHelper.App != null) _pic.Image = new Icon(IconHelper.App, 76, 76).ToBitmap(); } catch { }
-
-            _name = MakeLabel("CS-Ray", FontHelper.Ui(17f, FontStyle.Bold), fg, bg, 30);
-            _ver = MakeLabel("version " + VersionString(), FontHelper.Ui(9f), dim, bg, 20);
+            _name = MakeLabel("CS-Ray", FontHelper.Ui(17f, FontStyle.Bold));
+            _ver = MakeLabel("version " + VersionString(), FontHelper.Ui(9f));
             _desc = MakeLabel(
                 "Pure-managed C# proxy client for legacy ARM32 Windows.\nVLESS · VMess · Shadowsocks · TUN full-tunnel · subscriptions.",
-                FontHelper.Ui(9f), fg, bg, 44);
+                FontHelper.Ui(9f));
             _privacy = MakeLabel(
                 "This app collects ZERO data and sends nothing anywhere.\nNo telemetry, no analytics, no phone-home — it connects ONLY to the servers you add.",
-                FontHelper.Ui(9f, FontStyle.Bold), safe, bg, 46);
+                FontHelper.Ui(9f, FontStyle.Bold));
             _link = new LinkLabel
             {
-                Text = RepoUrl, AutoSize = false, Height = 20, TextAlign = ContentAlignment.MiddleCenter, BackColor = bg,
-                Font = FontHelper.Ui(9f), LinkColor = win, ActiveLinkColor = win, VisitedLinkColor = win,
-                LinkBehavior = LinkBehavior.HoverUnderline
+                Text = RepoUrl, AutoSize = false, TextAlign = ContentAlignment.MiddleCenter,
+                Font = FontHelper.Ui(9f), LinkBehavior = LinkBehavior.HoverUnderline
             };
             _link.LinkClicked += (s, e) => { try { Process.Start(RepoUrl); } catch { } };
-            _license = MakeLabel("Free & open-source (GPLv3) — audit it on GitHub. © 2026 Hamed.", FontHelper.Ui(8f), dim, bg, 16);
+            _license = MakeLabel("Free & open-source (GPLv3) — audit it on GitHub. © 2026 Hamed.", FontHelper.Ui(8f));
 
-            _btnClose = new MaterialButton { Text = "Close", Type = MaterialButton.MaterialButtonType.Contained, AutoSize = false, Width = 110, Height = 36 };
-            _btnClose.Click += (s, e) => Close();
+            foreach (Control c in new Control[] { _pic, _name, _ver, _desc, _privacy, _link, _license }) Body.Host.Controls.Add(c);
 
-            Controls.Add(_pic); Controls.Add(_name); Controls.Add(_ver); Controls.Add(_desc);
-            Controls.Add(_privacy); Controls.Add(_link); Controls.Add(_license); Controls.Add(_btnClose);
+            _btnClose = AddFooterButton("Close", RoundedButtonKind.Primary, DialogResult.Cancel);
             AcceptButton = _btnClose; CancelButton = _btnClose;
 
+            ApplyDialogTheme();
             Relayout();
         }
 
-        private static Label MakeLabel(string text, Font font, Color fore, Color back, int h)
-            => new Label { Text = text, AutoSize = false, Height = h, TextAlign = ContentAlignment.MiddleCenter, Font = font, ForeColor = fore, BackColor = back };
+        private static Label MakeLabel(string text, Font font)
+            => new Label { Text = text, AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = font, UseMnemonic = false }; // "&" is literal
 
-        // MaterialForm reserves its accent action bar via Padding.Top (fallback 64 before it's known).
-        private int TopInset => Math.Max(64, Padding.Top);
+        protected override void ApplyDialogTheme()
+        {
+            base.ApplyDialogTheme();
+            if (_name == null) return; // base ctor runs this before the rows exist
+            var p = ThemeHelper.Palette();
+            Color safe = p.Dark ? Color.FromArgb(104, 190, 130) : Color.FromArgb(38, 140, 86); // trust green for privacy
+            foreach (Control c in new Control[] { _pic, _name, _ver, _desc, _privacy, _link, _license }) c.BackColor = p.Surface;
+            _name.ForeColor = p.Text; _desc.ForeColor = p.Text;
+            _ver.ForeColor = p.Dim; _license.ForeColor = p.Dim;
+            _privacy.ForeColor = safe;
+            _link.LinkColor = _link.ActiveLinkColor = _link.VisitedLinkColor = p.AccentText;
+        }
 
-        protected override void OnLoad(EventArgs e) { base.OnLoad(e); Relayout(); }
-
+        // Rows are centered at font-derived heights (each label's text measured at its own font).
         private void Relayout()
         {
-            const int W = 468;
-            int cx = W / 2;
-            int y = TopInset + 16;
-            _pic.Location = new Point(cx - _pic.Width / 2, y); y += _pic.Height + 8;
-            Row(_name, W, ref y, 2);
-            Row(_ver, W, ref y, 12);
-            Row(_desc, W, ref y, 12);
-            Row(_privacy, W, ref y, 10);
-            Row(_link, W, ref y, 4);
-            Row(_license, W, ref y, 16);
-            _btnClose.Location = new Point(cx - _btnClose.Width / 2, y); y += _btnClose.Height + 16;
-            ClientSize = new Size(W, y);
+            int w = DrawHelper.Px(468);
+            int y = DrawHelper.Px(16);
+            _pic.Location = new Point((w - _pic.Width) / 2, y); y += _pic.Height + DrawHelper.Px(8);
+            Row(_name, w, ref y, DrawHelper.Px(2));
+            Row(_ver, w, ref y, DrawHelper.Px(12));
+            Row(_desc, w, ref y, DrawHelper.Px(12));
+            Row(_privacy, w, ref y, DrawHelper.Px(10));
+            Row(_link, w, ref y, DrawHelper.Px(4));
+            Row(_license, w, ref y, DrawHelper.Px(12));
+            FitToContent(w, y);
         }
 
         private static void Row(Control c, int w, ref int y, int gap)
         {
-            c.SetBounds(16, y, w - 32, c.Height);
-            y += c.Height + gap;
+            int inner = w - 2 * DrawHelper.Px(16);
+            int h = TextRenderer.MeasureText(c.Text, c.Font, new Size(inner, int.MaxValue), TextFormatFlags.WordBreak).Height + DrawHelper.Px(4);
+            c.SetBounds(DrawHelper.Px(16), y, inner, h);
+            y += h + gap;
         }
 
         private static string VersionString()

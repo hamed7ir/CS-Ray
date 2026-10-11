@@ -1,48 +1,49 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using MaterialSkin;
-using MaterialSkin.Controls;
 using CS_Ray.Core.Config;
 using CS_Ray.Core.Protocol;
 
 namespace CS_Ray.UI
 {
     /// <summary>
-    /// Protocol-adaptive Add/Edit server dialog. A themed MaterialForm (same ThemeHelper dark/light + accent +
-    /// Roboto as the main window, per TelegArm's dialog pattern). Shows ONLY the fields the chosen protocol+
-    /// transport needs: VLESS/VMess (tcp/ws/xhttp + UUID/SNI/TLS), Shadowsocks (cipher+password), and the plain
-    /// SOCKS5/HTTP(S) outbound proxies (address/port + optional user/pass). Produces a <see cref="ProxyProfile"/>
-    /// on OK (the SAME model the rest of the app uses); null on Cancel.
+    /// Protocol-adaptive Add/Edit server dialog. A <see cref="ThemedDialog"/> (same ThemeHelper dark/light + accent +
+    /// Roboto as the main window) with a scrolling body of themed fields and a Save/Cancel footer. Shows ONLY the
+    /// fields the chosen protocol+transport needs: VLESS/VMess (tcp/ws/xhttp + UUID/SNI/TLS), Shadowsocks
+    /// (cipher+password), and the plain SOCKS5/HTTP(S) outbound proxies (address/port + optional user/pass). Produces
+    /// a <see cref="ProxyProfile"/> on OK (the SAME model the rest of the app uses); null on Cancel.
     /// </summary>
-    public sealed class AddEditServerDialog : MaterialForm
+    public sealed class AddEditServerDialog : ThemedDialog
     {
-        private const int W = 430;
-        private const int FieldX = 24;
-        private const int FieldW = W - 48;
+        private static int W => DrawHelper.Px(430);
+        private static int FieldX => DrawHelper.Px(24);
+        private static int FieldW => W - 2 * FieldX;
+        private static int Gap => DrawHelper.Px(6);
 
         // SS ciphers the engine supports (AEAD only) — same set LinkParser accepts.
         private static readonly string[] SsMethods = { "chacha20-ietf-poly1305", "aes-256-gcm", "aes-128-gcm" };
 
-        private readonly MaterialComboBox _cboProtocol = NewCombo("Protocol");
-        private readonly MaterialComboBox _cboNetwork = NewCombo("Network (transport)");
-        private readonly MaterialComboBox _cboSsMethod = NewCombo("Encryption (SS method)");
-        private readonly MaterialTextBox2 _txtName = NewText("Name (optional — defaults to address)");
-        private readonly MaterialTextBox2 _txtAddress = NewText("Address (host or IP)");
-        private readonly MaterialTextBox2 _txtPort = NewText("Port");
-        private readonly MaterialTextBox2 _txtUuid = NewText("UUID");
-        private readonly MaterialTextBox2 _txtAlterId = NewText("AlterId (0 only — AEAD)");
-        private readonly MaterialTextBox2 _txtUser = NewText("Username (optional)");
-        private readonly MaterialTextBox2 _txtPassword = NewText("Password");
-        private readonly MaterialTextBox2 _txtWsHost = NewText("Host (ws/xhttp)");
-        private readonly MaterialTextBox2 _txtWsPath = NewText("Path (ws/xhttp)");
-        private readonly MaterialTextBox2 _txtSni = NewText("SNI (TLS server name)");
-        private readonly MaterialSwitch _swTls = new MaterialSwitch { Text = "TLS", AutoSize = true };
-        private readonly MaterialSwitch _swInsecure = new MaterialSwitch { Text = "Allow insecure (skip cert check)", AutoSize = true };
-        private readonly MaterialLabel _lblError = new MaterialLabel { AutoSize = false, ForeColor = Color.Firebrick };
-        private readonly MaterialLabel _lblNote = new MaterialLabel { AutoSize = false, ForeColor = Color.Firebrick }; // unsupported-server note
-        private readonly MaterialButton _btnOk = new MaterialButton { Text = "Save", Type = MaterialButton.MaterialButtonType.Contained, AutoSize = false, Width = 100, Height = 36 };
-        private readonly MaterialButton _btnCancel = new MaterialButton { Text = "Cancel", Type = MaterialButton.MaterialButtonType.Outlined, AutoSize = false, Width = 90, Height = 36 };
+        private readonly ThemedComboBox _cboProtocol = NewCombo("Protocol");
+        private readonly ThemedComboBox _cboNetwork = NewCombo("Network (transport)");
+        private readonly ThemedComboBox _cboSsMethod = NewCombo("Encryption (SS method)");
+        private readonly ThemedTextBox _txtName = NewText("Name (optional — defaults to address)");
+        private readonly ThemedTextBox _txtAddress = NewText("Address (host or IP)");
+        private readonly ThemedTextBox _txtPort = NewText("Port");
+        private readonly ThemedTextBox _txtUuid = NewText("UUID");
+        private readonly ThemedTextBox _txtAlterId = NewText("AlterId (0 only — AEAD)");
+        private readonly ThemedTextBox _txtUser = NewText("Username (optional)");
+        private readonly ThemedTextBox _txtPassword = NewText("Password");
+        private readonly ThemedTextBox _txtWsHost = NewText("Host (ws/xhttp)");
+        private readonly ThemedTextBox _txtWsPath = NewText("Path (ws/xhttp)");
+        private readonly ThemedTextBox _txtSni = NewText("SNI (TLS server name)");
+        private readonly ToggleSwitch _swTls = new ToggleSwitch();
+        private readonly ToggleSwitch _swInsecure = new ToggleSwitch();
+        private readonly Label _lblTls = NewToggleLabel("TLS");
+        private readonly Label _lblInsecure = NewToggleLabel("Allow insecure (skip cert check)");
+        private readonly Label _lblError = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Font = FontHelper.Ui(9f) };
+        private readonly Label _lblNote = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Font = FontHelper.Ui(9f) }; // unsupported-server note
+        private readonly RoundedButton _btnOk;
+        private readonly RoundedButton _btnCancel;
 
         private readonly string _editId;     // non-null when editing (keep Id/Group)
         private readonly string _editGroup;
@@ -52,69 +53,59 @@ namespace CS_Ray.UI
         /// <summary>The profile produced on OK (null on Cancel).</summary>
         public ProxyProfile Result { get; private set; }
 
-        public AddEditServerDialog(ProxyProfile existing)
+        public AddEditServerDialog(ProxyProfile existing) : base(existing == null ? "Add Server" : "Edit Server")
         {
             _editId = existing?.Id;
             _editGroup = existing?.Group;
             _unsupported = existing != null && existing.Unsupported;
             _noteText = existing?.UnsupportedReason;
 
-            var skin = MaterialSkinManager.Instance;
-            skin.AddFormToManage(this);
-            if (IconHelper.App != null) Icon = IconHelper.App; // window icon (taskbar / Alt-Tab)
-            skin.Theme = ThemeHelper.IsDark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var win = ThemeHelper.GetWindowsAccentColor();
-            var accent = (Primary)(uint)win.ToArgb();
-            // Singleton-trap fix: the MaterialSkin Accent slot (focus underline / floating hint) carries the SAME
-            // Windows accent — NOT the hardcoded LightBlue200 that flipped the app-wide accent the moment this opened.
-            skin.ColorScheme = new ColorScheme(accent, accent, accent, (Accent)(uint)win.ToArgb(), TextShade.WHITE);
-
-            Text = existing == null ? "Add Server" : "Edit Server"; // shown in the full accent action bar
-            AutoScaleMode = AutoScaleMode.Font;
-            Font = FontHelper.Ui(9f);
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = false; MinimizeBox = false; Sizable = false;
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); } };
 
             _cboProtocol.Items.AddRange(new object[] { "vless", "vmess", "shadowsocks", "socks", "http", "https" });
             _cboNetwork.Items.AddRange(new object[] { "tcp", "ws", "xhttp" });
             _cboSsMethod.Items.AddRange(SsMethods);
-            _txtPort.Width = 120;
 
             foreach (var c in new Control[] { _cboProtocol, _cboNetwork, _cboSsMethod, _txtName, _txtAddress,
                 _txtPort, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _txtSni,
-                _swTls, _swInsecure, _lblError, _btnOk, _btnCancel })
-            { c.Width = c.Width > 0 ? c.Width : FieldW; Controls.Add(c); }
-            foreach (var t in new[] { _txtName, _txtAddress, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _txtSni })
-                t.Width = FieldW;
-            _txtPort.Width = 120;
-            _cboProtocol.Width = _cboNetwork.Width = _cboSsMethod.Width = FieldW;
-            _lblError.Width = FieldW;
+                _lblTls, _swTls, _lblInsecure, _swInsecure, _lblError, _lblNote })
+            { if (!(c is ToggleSwitch)) c.Width = FieldW; Body.Host.Controls.Add(c); } // switches keep their DPI-scaled size
+            _txtPort.Width = DrawHelper.Px(120);
+            _swTls.TabStop = _swInsecure.TabStop = true;   // keyboard: Tab reaches them, Space flips them
+            // The whole toggle row is the tap target (touch): its label flips the switch too.
+            _lblTls.Click += (s, e) => _swTls.Checked = !_swTls.Checked;
+            _lblInsecure.Click += (s, e) => _swInsecure.Checked = !_swInsecure.Checked;
 
-            _lblNote.Width = FieldW; _lblNote.Visible = _unsupported;
+            _lblNote.Visible = _unsupported;
             if (_unsupported) _lblNote.Text = "⚠ " + (_noteText ?? "Unsupported by the managed engine") + " — view only.";
-            Controls.Add(_lblNote);
+
+            _btnOk = AddFooterButton("Save", RoundedButtonKind.Primary);                          // rightmost
+            _btnCancel = AddFooterButton("Cancel", RoundedButtonKind.Secondary, DialogResult.Cancel);
 
             _cboProtocol.SelectedIndexChanged += (s, e) => Relayout();
             _cboNetwork.SelectedIndexChanged += (s, e) => Relayout();
             _btnOk.Click += OnOk;
-            _btnCancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
 
             if (existing != null) LoadFrom(existing);
             else { _cboProtocol.SelectedIndex = 0; _cboNetwork.SelectedIndex = 0; _cboSsMethod.SelectedIndex = 0; _txtWsPath.Text = "/"; }
 
+            ApplyDialogTheme();
             Relayout();
         }
 
         private string Proto => (_cboProtocol.SelectedItem as string) ?? "vless";
         private string Net => (_cboNetwork.SelectedItem as string) ?? "tcp";
 
-        // MaterialForm reserves its accent action bar via Padding.Top; start content below it (fallback 64 before
-        // the handle/padding is known — OnLoad re-runs Relayout once the real value is set).
-        private int TopInset => Math.Max(64, Padding.Top);
-
-        protected override void OnLoad(EventArgs e) { base.OnLoad(e); Relayout(); }
+        protected override void ApplyDialogTheme()
+        {
+            base.ApplyDialogTheme();
+            if (_lblError == null) return; // base ctor runs this before the fields exist
+            var p = ThemeHelper.Palette();
+            foreach (var l in new[] { _lblTls, _lblInsecure, _lblError, _lblNote }) l.BackColor = p.Surface;
+            _lblTls.ForeColor = _lblInsecure.ForeColor = p.Text;
+            _lblError.ForeColor = _lblNote.ForeColor = p.Error;
+        }
 
         private void Relayout()
         {
@@ -126,44 +117,67 @@ namespace CS_Ray.UI
             bool ws = vlessLike && Net == "ws";
             bool wsOrXhttp = ws || xhttp;
 
-            int y = TopInset + 8; // below the accent action bar
-            if (_unsupported) { _lblNote.Location = new Point(FieldX, y); _lblNote.Height = 34; y += 40; }
-            Place(_cboProtocol, ref y, 50, true);
-            Place(_txtName, ref y, 50, true);
-            Place(_txtAddress, ref y, 50, true);
-            Place(_txtPort, ref y, 50, true);
-            Place(_txtUuid, ref y, 50, vlessLike);
-            Place(_txtAlterId, ref y, 50, vmess);
-            Place(_cboSsMethod, ref y, 50, ss);
-            Place(_txtUser, ref y, 50, proxyLike);                 // socks/http(s): optional auth
-            Place(_txtPassword, ref y, 50, ss || proxyLike);       // SS password OR proxy password
-            Place(_cboNetwork, ref y, 50, vlessLike);
-            Place(_txtWsHost, ref y, 50, wsOrXhttp);
-            Place(_txtWsPath, ref y, 50, wsOrXhttp);
-            Place(_txtSni, ref y, 50, vlessLike || https);         // vless TLS/xhttp + https-proxy TLS
-            Place(_swTls, ref y, 34, vlessLike && !xhttp);         // xhttp implies TLS — hide the toggle
-            Place(_swInsecure, ref y, 34, vlessLike || https);
+            _tabIndex = 0;
+            int y = DrawHelper.Px(10);
+            if (_unsupported)
+            {
+                int noteH = TextRenderer.MeasureText(_lblNote.Text, _lblNote.Font, new Size(FieldW, int.MaxValue), TextFormatFlags.WordBreak).Height + DrawHelper.Px(8);
+                _lblNote.SetBounds(FieldX, y, FieldW, noteH); y += noteH + Gap;
+            }
+            Place(_cboProtocol, ref y, true);
+            Place(_txtName, ref y, true);
+            Place(_txtAddress, ref y, true);
+            Place(_txtPort, ref y, true);
+            Place(_txtUuid, ref y, vlessLike);
+            Place(_txtAlterId, ref y, vmess);
+            Place(_cboSsMethod, ref y, ss);
+            Place(_txtUser, ref y, proxyLike);                 // socks/http(s): optional auth
+            Place(_txtPassword, ref y, ss || proxyLike);       // SS password OR proxy password
+            Place(_cboNetwork, ref y, vlessLike);
+            Place(_txtWsHost, ref y, wsOrXhttp);
+            Place(_txtWsPath, ref y, wsOrXhttp);
+            Place(_txtSni, ref y, vlessLike || https);         // vless TLS/xhttp + https-proxy TLS
+            PlaceToggle(_lblTls, _swTls, ref y, vlessLike && !xhttp);   // xhttp implies TLS — hide the toggle
+            PlaceToggle(_lblInsecure, _swInsecure, ref y, vlessLike || https);
 
-            _lblError.Location = new Point(FieldX, y); _lblError.Height = 24; _lblError.Visible = true; y += 28;
-            _btnOk.Location = new Point(W - 24 - _btnOk.Width, y);
-            _btnCancel.Location = new Point(_btnOk.Left - 8 - _btnCancel.Width, y);
-            y += 48;
+            int errH = Math.Max(DrawHelper.Px(22), _lblError.Font.Height + DrawHelper.Px(6));
+            _lblError.SetBounds(FieldX, y, FieldW, errH); _lblError.Visible = true; y += errH + Gap;
 
-            ClientSize = new Size(W, y + 8);
+            FitToContent(W, y);
         }
 
-        private static void Place(Control c, ref int y, int h, bool visible)
+        private int _tabIndex;   // Tab follows the on-screen order of the rows Relayout shows
+
+        private void Place(Control c, ref int y, bool visible)
         {
             c.Visible = visible;
             if (!visible) return;
+            c.TabIndex = _tabIndex++;
             c.Location = new Point(FieldX, y);
-            y += h;
+            y += c.Height + Gap;
+        }
+
+        // A toggle row: label on the left, switch right-aligned to the field column, row height font-derived.
+        private void PlaceToggle(Label lbl, ToggleSwitch sw, ref int y, bool visible)
+        {
+            lbl.Visible = sw.Visible = visible;
+            if (!visible) return;
+            sw.TabIndex = _tabIndex++;
+            int rowH = Math.Max(DrawHelper.Px(34), Math.Max(sw.Height, lbl.Font.Height) + DrawHelper.Px(10));
+            lbl.SetBounds(FieldX, y, FieldW - sw.Width - DrawHelper.Px(8), rowH);
+            sw.Location = new Point(FieldX + FieldW - sw.Width, y + (rowH - sw.Height) / 2);
+            y += rowH + Gap;
         }
 
         private void OnOk(object sender, EventArgs e)
         {
             string err = Validate(out var p);
-            if (err != null) { _lblError.Text = err; return; }
+            if (err != null)
+            {
+                _lblError.Text = err;
+                Body.EnsureVisible(_lblError.Top, _lblError.Height); // the row may be below the fold of a capped dialog
+                return;
+            }
             Result = p;
             DialogResult = DialogResult.OK;
             Close();
@@ -254,7 +268,9 @@ namespace CS_Ray.UI
             _swInsecure.Checked = p.AllowInsecure;
         }
 
-        private static MaterialTextBox2 NewText(string hint) => new MaterialTextBox2 { Hint = hint, Width = FieldW };
-        private static MaterialComboBox NewCombo(string hint) => new MaterialComboBox { Hint = hint, Width = FieldW };
+        private static ThemedTextBox NewText(string hint) => new ThemedTextBox { Hint = hint, Width = FieldW };
+        private static ThemedComboBox NewCombo(string hint) => new ThemedComboBox { Hint = hint, Width = FieldW };
+        private static Label NewToggleLabel(string text)
+            => new Label { Text = text, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Font = FontHelper.Ui(10f), Cursor = Cursors.Hand };
     }
 }

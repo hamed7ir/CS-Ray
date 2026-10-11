@@ -5,8 +5,6 @@ using System.Drawing;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using MaterialSkin;
-using MaterialSkin.Controls;
 using CS_Ray.Core;
 using CS_Ray.Core.Config;
 
@@ -16,12 +14,11 @@ namespace CS_Ray.UI
     /// Minimal spike UI: enter VLESS server fields, Start/Stop the engine on
     /// 127.0.0.1:10808, and watch the log. No link parsing / no theming yet.
     /// </summary>
-    public class MainForm : MaterialForm
+    public class MainForm : ThemedForm
     {
-        private MaterialSkinManager _skin;
         private bool _dark;
         private Color _accent;
-        private Panel _content;            // all existing controls live here, below the Material title bar
+        private Panel _content;            // all existing controls live here, below the accent title bar
         // Bottom-bar primary controls.
         private readonly ToggleSwitch _chkSystemProxy; // System-proxy on/off (field name kept; now an owner-drawn toggle)
         private readonly ToggleSwitch _chkRouteAll;    // Full-tunnel intent toggle (read by OnTunClick)
@@ -32,6 +29,11 @@ namespace CS_Ray.UI
         private readonly Button _btnRemove;
         private readonly Button _btnClearLog;
         private readonly Label _lblSlow;
+        private readonly Panel _bar;                 // bottom control bar (laid out by LayoutBar)
+        private readonly Panel _topBar, _bottomRegion; // tab strip row / bar + log (LayoutRegions flexes the log)
+        private readonly int _maxClientW;
+        private readonly Label _lblFullTunnel, _lblSysProxy;
+        private bool _inLayoutBar;
         private readonly TextBox _txtLog;
 
         // Group tabs: a hidden backing TabControl drives the visible flat strip + all existing group logic.
@@ -46,7 +48,7 @@ namespace CS_Ray.UI
         private ContextMenuStrip _trayMenu;
         private bool _reallyClosing;                 // true = real quit (Exit); ✕ otherwise hides to tray
         private ThemedScrollBar _logScroll, _listScroll;
-        private Font _rowFont, _rowFontBold;         // server-list row fonts (kept private — MaterialSkin reassigns Control.Font)
+        private Font _rowFont, _rowFontBold;         // server-list row fonts (kept private — owner-draw never reads Control.Font)
         private string _runningProfileId;            // the profile whose engine is CURRENTLY running (active indicator)
         private bool _swapInProgress;                // hot-swap atomicity guard (drop overlapping requests)
         private string _switchingToId;               // swap target id (drives the transition indicator)
@@ -61,16 +63,16 @@ namespace CS_Ray.UI
 
         /// <summary>Set by Program when launched with --startup (HKCU Run-key login) → start minimized to the tray.</summary>
         public bool StartInTray { get; set; }
-        private ComboBox _cboDnsResolver;
-        private TextBox _txtLink;
+        private ThemedTextBox _cboDnsResolver;    // editable resolver IP + preset suggestions
+        private ThemedTextBox _txtLink;
         private Button _btnAdd;
         private Button _btnAddServer;
-        private TextBox _txtTestUrl;
-        private TextBox _txtTunTestIp;
+        private ThemedTextBox _txtTestUrl;
+        private ThemedTextBox _txtTunTestIp;
         private Button _btnUdpTest;
 
         // Settings → Subscriptions tab: add row + per-row management.
-        private TextBox _txtSubUrl;
+        private ThemedTextBox _txtSubUrl;
         private Button _btnAddSub;
         private ListBox _listSubs;
         private Button _btnSubUpdate, _btnSubDelete, _btnSubEdit;
@@ -120,21 +122,23 @@ namespace CS_Ray.UI
             _store.Load();
             ThemeMode tm; if (!Enum.TryParse(_store.ThemeMode ?? "System", true, out tm)) tm = ThemeMode.System;
             ThemeHelper.InitMode(tm);
+            ThemeHelper.InitAccent(ThemeHelper.ParseAccent(_store.AccentColor)); // "" / null = follow the Windows accent
 
-            // MaterialSkin chrome + theme (TelegArm: AddFormToManage → ApplyTheme; system-DPI + AutoScaleMode.Font).
-            _skin = MaterialSkinManager.Instance;
-            _skin.AddFormToManage(this);
+            // Themed chrome comes from ThemedForm (borderless accent title bar, app icon, system-DPI +
+            // AutoScaleMode.Font); resolve the theme before any control reads it. The tray icon reflects the current
+            // mode (idle / system-proxy / full-tunnel) — see ResolveTrayIcon.
             ApplyTheme();
 
-            // App/window icon = icon.ico (shared by every form via IconHelper). The tray icon reflects the current
-            // mode (idle / system-proxy / full-tunnel) — see ResolveTrayIcon.
-            if (IconHelper.App != null) Icon = IconHelper.App;
-
-            AutoScaleMode = AutoScaleMode.Font;
             Font = FontHelper.Ui(9f);
             Text = "CS-Ray";
-            ClientSize = new Size(620, 720);
-            MinimumSize = new Size(560, 560);
+            // System-DPI design size, capped to the work area of the screen CenterScreen will use (the cursor's) — the
+            // log flexes (LayoutRegions) so the server list keeps its rows when that cap bites. LayoutBar raises the
+            // minimum width to fit the bar, within the same cap.
+            var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+            _maxClientW = (int)(wa.Width * 0.92);
+            int maxH = (int)(wa.Height * 0.92);
+            ClientSize = new Size(Math.Min(DrawHelper.Px(620), _maxClientW), Math.Min(DrawHelper.Px(720), maxH));
+            MinimumSize = new Size(Math.Min(DrawHelper.Px(560), _maxClientW), Math.Min(DrawHelper.Px(560), maxH));
             StartPosition = FormStartPosition.CenterScreen;
 
             // Hidden backing TabControl drives the visible group strip + ALL existing group logic.
@@ -145,17 +149,18 @@ namespace CS_Ray.UI
             // Build the controls that live in the settings popup (created + wired now; re-homed lazily on open).
             BuildSettingsControls();
 
-            // Content panel under the Material title bar; whole body in Roboto.
+            // Content panel under the accent title bar (ThemedForm's Padding reserves it); whole body in Roboto.
             _content = new Panel { Dock = DockStyle.Fill, Font = FontHelper.Ui(9f) };
             Controls.Add(_content);
 
             // TOP — hamburger + flat group tab strip (HotCornersWin ScaledTabSelector approach).
-            var topBar = new Panel { Dock = DockStyle.Top, Height = 48 }; // taller → finger-tappable tabs
-            _strip = new GroupTabStrip(FontHelper.Ui(11f, FontStyle.Bold)) { Dock = DockStyle.Fill };
+            var stripFont = FontHelper.Ui(11f, FontStyle.Bold);
+            var topBar = _topBar = new Panel { Dock = DockStyle.Top, Height = Math.Max(DrawHelper.Px(48), stripFont.Height + DrawHelper.Px(22)) }; // finger-tappable tabs
+            _strip = new GroupTabStrip(stripFont) { Dock = DockStyle.Fill };
             _strip.BaseTabControl = _tabs;
             _strip.SelectedTabChanged += OnTabChanged; // reliable click signal (hidden _tabs may have no handle)
             _strip.TabRightClicked += OnTabRightClicked; // right-click a sub tab → Update/Remove/Rename menu
-            _btnHamburger = new Button { Text = "☰", Dock = DockStyle.Right, Width = 46, FlatStyle = FlatStyle.Flat, Font = FontHelper.Ui(13f) };
+            _btnHamburger = new Button { Text = "☰", Dock = DockStyle.Right, Width = DrawHelper.Px(46), FlatStyle = FlatStyle.Flat, Font = FontHelper.Ui(13f) };
             _btnHamburger.FlatAppearance.BorderSize = 0;
             _btnHamburger.Click += OnHamburgerClick;
             topBar.Controls.Add(_strip);         // Fill first
@@ -175,36 +180,38 @@ namespace CS_Ray.UI
 
             // BOTTOM — control bar (Engine/TUN + toggles + list/log actions) over the docked log.
             // Touch sizing: ~44px-high buttons, larger Roboto on the bar so checkboxes/labels are finger-tappable.
-            var bottomRegion = new Panel { Dock = DockStyle.Bottom, Height = 320 };
-            var bar = new Panel { Dock = DockStyle.Top, Height = 108, Font = FontHelper.Ui(10.5f) };
-            _btnEngine = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Start Engine", Left = 8, Top = 8, Width = 128, Height = 44 };
+            // Positions/sizes come from LayoutBar (font- + DPI-derived), not fixed 96-DPI pixels.
+            var bottomRegion = _bottomRegion = new Panel { Dock = DockStyle.Bottom };
+            var bar = _bar = new Panel { Dock = DockStyle.Top, Font = FontHelper.Ui(10.5f) };
+            _btnEngine = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Start Engine" };
             _btnEngine.Click += OnEngineToggle;
-            _btnTun = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Start TUN", Left = 144, Top = 8, Width = 110, Height = 44 };
+            _btnTun = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Start TUN" };
             _btnTun.Click += OnTunClick;
             // Full tunnel + System proxy: two toggle rows STACKED vertically on the right of the bar (label + slider,
-            // one below the other — no longer side-by-side checkboxes). Same bound behavior as before.
-            // AutoSize labels so the full text ("System proxy") never clips (a fixed width did — and it scales with
-            // DPI); the toggles sit in an aligned column to their right.
-            var lblFullTunnel = new Label { Text = "Full tunnel", Left = 392, Top = 16, AutoSize = true, Font = FontHelper.Ui(9.5f) };
-            _chkRouteAll = new ToggleSwitch { Left = 492, Top = 13 };
-            lblFullTunnel.Click += (s, e) => _chkRouteAll.Checked = !_chkRouteAll.Checked;
-            var lblSysProxy = new Label { Text = "System proxy", Left = 392, Top = 52, AutoSize = true, Font = FontHelper.Ui(9.5f) };
-            _chkSystemProxy = new ToggleSwitch { Left = 492, Top = 49 };
+            // one below the other — no longer side-by-side checkboxes). Same bound behavior as before. AutoSize labels
+            // so the full text never clips; LayoutBar right-aligns each label against its toggle so it can't overlap it.
+            _lblFullTunnel = new Label { Text = "Full tunnel", AutoSize = true, Font = FontHelper.Ui(9.5f) };
+            _chkRouteAll = new ToggleSwitch();
+            _lblFullTunnel.Click += (s, e) => _chkRouteAll.Checked = !_chkRouteAll.Checked;
+            _lblSysProxy = new Label { Text = "System proxy", AutoSize = true, Font = FontHelper.Ui(9.5f) };
+            _chkSystemProxy = new ToggleSwitch();
             _chkSystemProxy.CheckedChanged += OnSystemProxyToggle;
-            lblSysProxy.Click += (s, e) => _chkSystemProxy.Checked = !_chkSystemProxy.Checked;
-            _btnTest = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Test", Left = 8, Top = 58, Width = 84, Height = 42 };
+            _lblSysProxy.Click += (s, e) => _chkSystemProxy.Checked = !_chkSystemProxy.Checked;
+            _btnTest = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Test" };
             _btnTest.Click += OnTestClick;
-            _btnTestAll = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Test All", Left = 98, Top = 58, Width = 92, Height = 42 };
+            _btnTestAll = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Test All" };
             _btnTestAll.Click += OnTestAllClick;
-            _btnRemove = new RoundedButton { Kind = RoundedButtonKind.Danger, Text = "Remove", Left = 196, Top = 58, Width = 92, Height = 42 };
+            _btnRemove = new RoundedButton { Kind = RoundedButtonKind.Danger, Text = "Remove" };
             _btnRemove.Click += OnRemoveProfile;
-            _btnClearLog = new RoundedButton { Kind = RoundedButtonKind.Neutral, Text = "Clear log", Left = 294, Top = 58, Width = 92, Height = 42 };
+            _btnClearLog = new RoundedButton { Kind = RoundedButtonKind.Neutral, Text = "Clear log" };
             _btnClearLog.Click += (s, e) => _txtLog.Clear();
-            _lblSlow = new Label { Text = "[SLOW MODE]", ForeColor = Color.Firebrick, Left = 392, Top = 84, AutoSize = true, Visible = false };
+            _lblSlow = new Label { Text = "[SLOW MODE]", ForeColor = Color.Firebrick, AutoSize = true, Visible = false };
             bar.Controls.Add(_btnEngine); bar.Controls.Add(_btnTun);
-            bar.Controls.Add(lblFullTunnel); bar.Controls.Add(_chkRouteAll);
-            bar.Controls.Add(lblSysProxy); bar.Controls.Add(_chkSystemProxy);
+            bar.Controls.Add(_lblFullTunnel); bar.Controls.Add(_chkRouteAll);
+            bar.Controls.Add(_lblSysProxy); bar.Controls.Add(_chkSystemProxy);
             bar.Controls.Add(_btnTest); bar.Controls.Add(_btnTestAll); bar.Controls.Add(_btnRemove); bar.Controls.Add(_btnClearLog); bar.Controls.Add(_lblSlow);
+            LayoutBar();
+            bar.Resize += (s, e) => LayoutBar();                      // right column follows the window width
 
             _txtLog = new TextBox
             {
@@ -220,6 +227,8 @@ namespace CS_Ray.UI
             _content.Controls.Add(listHost);
             _content.Controls.Add(topBar);
             _content.Controls.Add(bottomRegion);
+            LayoutRegions();
+            _content.Resize += (s, e) => LayoutRegions();
 
             // Touch: finger drag-to-scroll on both; long-press the list → the per-server menu; tap → select a row.
             _logTouch = new TouchScroller(_txtLog, dy => _logScroll?.ScrollByPixels(dy), null, null);
@@ -258,7 +267,7 @@ namespace CS_Ray.UI
             _btnAddServer = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Add Server…", Width = 130, Height = 28 };
             _btnAddServer.Click += OnAddServerClick;
 
-            _txtLink = new TextBox { Width = 380 };
+            _txtLink = new ThemedTextBox();
             _btnAdd = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Add from link", Width = 120, Height = 26 };
             _btnAdd.Click += OnAddFromLink;
 
@@ -276,18 +285,17 @@ namespace CS_Ray.UI
             _syncingStartup = true; _chkStartup.Checked = StartupIsEnabled(); _syncingStartup = false;
             _chkStartup.CheckedChanged += OnStartupToggle;
 
-            _cboDnsResolver = new ComboBox { Width = 130, DropDownStyle = ComboBoxStyle.DropDown };
-            _cboDnsResolver.Items.AddRange(new object[] { "8.8.8.8", "1.1.1.1", "9.9.9.9" });
+            _cboDnsResolver = new ThemedTextBox { Suggestions = new[] { "8.8.8.8", "1.1.1.1", "9.9.9.9" } };
             _cboDnsResolver.Text = "8.8.8.8";
             _cboDnsResolver.TextChanged += (s, e) => ApplyDnsResolver();
 
-            _txtTestUrl = new TextBox { Width = 360 };
-            _txtTunTestIp = new TextBox { Width = 200 };
+            _txtTestUrl = new ThemedTextBox();
+            _txtTunTestIp = new ThemedTextBox();
             _btnUdpTest = new RoundedButton { Kind = RoundedButtonKind.Neutral, Text = "UDP test (E1)", Width = 130, Height = 26 };
             _btnUdpTest.Click += OnUdpSelfTestClick;
 
             // ── Subscriptions tab ──
-            _txtSubUrl = new TextBox { Width = 334 };
+            _txtSubUrl = new ThemedTextBox();
             _btnAddSub = new RoundedButton { Kind = RoundedButtonKind.Primary, Text = "Add", Width = 90, Height = 26 };
             _btnAddSub.Click += OnAddSub;
             _listSubs = new ListBox { Width = 552, Height = 300, IntegralHeight = false };
@@ -321,6 +329,7 @@ namespace CS_Ray.UI
                 DrawerSep(),
                 DrawerRow("⚙", "Settings", OpenSettings),
                 DrawerVal("🎨", "Theme", themeName, CycleTheme),
+                DrawerVal("◉", "Accent", AccentName(), ShowAccentMenu),
                 DrawerRow("ℹ", "About", ShowAbout),
                 DrawerSep(),
                 DrawerDanger("⏻", "Exit", ExitApp),
@@ -402,6 +411,75 @@ namespace CS_Ray.UI
             var item = new ToolStripMenuItem(text) { Font = FontHelper.Ui(9.5f) };
             item.Click += (s, e) => BeginInvoke(action);
             menu.Items.Add(item);
+        }
+
+        // ── Accent (DroidFinestra port): follow Windows, a preset swatch, or a custom color. Applied live through
+        // ThemeHelper.SetAccent → ThemeChanged (the same path a Windows accent change takes) and persisted. ──
+        private static readonly KeyValuePair<string, Color>[] AccentSwatches =
+        {
+            new KeyValuePair<string, Color>("Green",  Color.FromArgb(16, 137, 62)),
+            new KeyValuePair<string, Color>("Blue",   Color.FromArgb(0, 120, 215)),
+            new KeyValuePair<string, Color>("Teal",   Color.FromArgb(0, 128, 128)),
+            new KeyValuePair<string, Color>("Purple", Color.FromArgb(116, 77, 169)),
+            new KeyValuePair<string, Color>("Red",    Color.FromArgb(196, 43, 28)),
+            new KeyValuePair<string, Color>("Orange", Color.FromArgb(202, 80, 16)),
+        };
+
+        private static string AccentName()
+        {
+            var cur = ThemeHelper.AccentOverride;
+            if (!cur.HasValue) return "Windows";
+            foreach (var sw in AccentSwatches) if (sw.Value.ToArgb() == cur.Value.ToArgb()) return sw.Key;
+            return ThemeHelper.FormatAccent(cur);
+        }
+
+        private void ShowAccentMenu()
+        {
+            var cur = ThemeHelper.AccentOverride;
+            var menu = new ThemedContextMenuStrip();
+            var win = new ToolStripMenuItem("Windows accent") { Checked = !cur.HasValue };
+            win.Click += (s, e) => SetAccent(null);
+            menu.Items.Add(win);
+            menu.Items.Add(new ToolStripSeparator());
+            bool matched = false;
+            foreach (var sw in AccentSwatches)
+            {
+                var c = sw.Value;
+                bool on = cur.HasValue && c.ToArgb() == cur.Value.ToArgb();
+                matched |= on;
+                var it = new ToolStripMenuItem(sw.Key) { Checked = on, Image = AccentSwatch(c) };
+                it.Click += (s, e) => SetAccent(c);
+                menu.Items.Add(it);
+            }
+            menu.Items.Add(new ToolStripSeparator());
+            var custom = new ToolStripMenuItem("Custom…") { Checked = cur.HasValue && !matched };
+            custom.Click += (s, e) => BeginInvoke((Action)PickCustomAccent); // after the menu has closed
+            menu.Items.Add(custom);
+            menu.Closed += (s, e) => { try { BeginInvoke((Action)menu.Dispose); } catch { } };
+            menu.Show(Cursor.Position);
+        }
+
+        private static Bitmap AccentSwatch(Color c)
+        {
+            int px = DrawHelper.Px(14);
+            var b = new Bitmap(px, px);
+            using (var g = Graphics.FromImage(b))
+            using (var br = new SolidBrush(c)) { g.Clear(Color.Transparent); g.FillRectangle(br, 1, 1, px - 2, px - 2); }
+            return b;
+        }
+
+        /// <summary>null = follow the Windows accent again.</summary>
+        private void SetAccent(Color? c)
+        {
+            ThemeHelper.SetAccent(c);    // raises ThemeChanged → every themed control recolors live
+            _store.AccentColor = ThemeHelper.FormatAccent(c); _store.Save();
+        }
+
+        private void PickCustomAccent()
+        {
+            using (var cd = new ColorDialog { FullOpen = true, AnyColor = true, Color = ThemeHelper.GetWindowsAccentColor() })
+                if (cd.ShowDialog(this) == DialogResult.OK)
+                    SetAccent(Color.FromArgb(cd.Color.R, cd.Color.G, cd.Color.B));
         }
 
         private void SetThemeMode(ThemeMode mode)
@@ -486,31 +564,35 @@ namespace CS_Ray.UI
 
         // Fill the popup's General + Subscriptions pages in TelegArm's sectioned style: accent section headers +
         // rounded bordered cards, each a stack of rows (label [+ subtitle] left, a control right). Absolute
-        // positions inside the fixed-size scroll pages (no anchors → no reparent-size pitfalls).
+        // positions inside the scroll pages (no anchors → no reparent-size pitfalls). Every metric is system-DPI
+        // (DrawHelper.Px) or measured from its font — rows fit a field box, buttons fit their caption.
         private void LayoutSettings(SettingsPopup pop)
         {
-            const int cardW = 548;
+            int cardW = DrawHelper.Px(548);
+            int m = DrawHelper.Px(14), gap = DrawHelper.Px(8), bh = DrawHelper.Px(30);
+            FitSetButton(_btnAddServer, bh); FitSetButton(_btnAdd, bh); FitSetButton(_btnUdpTest, bh); FitSetButton(_btnAddSub, bh);
 
             // ── General page ──
-            var g = pop.GeneralPage; int y = 12;
+            var g = pop.GeneralPage; int y = DrawHelper.Px(12);
 
             y = SetSection(g, "Servers", y, cardW);
             var serversCard = SetCard(g, y, 2, cardW); y += serversCard.Height + SetSecGap;
-            SetRowTitle(serversCard, 0, "Add a server", "Open the add / edit dialog", 130);
-            _btnAddServer.Size = new Size(104, 30); SetPlaceRight(serversCard, 0, _btnAddServer, 14);
-            _btnAdd.Size = new Size(96, 28);
-            _txtLink.SetBounds(16, SetCardPad + SetRowH + (SetRowH - 24) / 2, cardW - 16 - 96 - 14 - 8, 24); serversCard.Controls.Add(_txtLink);
-            _btnAdd.Location = new Point(cardW - 96 - 14, SetCardPad + SetRowH + (SetRowH - 28) / 2); serversCard.Controls.Add(_btnAdd);
+            SetRowTitle(serversCard, 0, "Add a server", "Open the add / edit dialog", _btnAddServer.Width + m + gap);
+            SetPlaceRight(serversCard, 0, _btnAddServer, m);
+            _txtLink.Width = cardW - m - _btnAdd.Width - gap - SetInnerX; SetPlaceLeft(serversCard, 1, _txtLink); // field first → Tab order
+            SetPlaceRight(serversCard, 1, _btnAdd, m);
 
             y = SetSection(g, "Connection", y, cardW);
             var connCard = SetCard(g, y, 3, cardW); y += connCard.Height + SetSecGap;
             SetToggleRow(connCard, 0, "Block QUIC (UDP 443)", "Optional; QUIC tunnels by default", _chkBlockQuic);
             SetDivider(connCard, 0);
-            SetRowTitle(connCard, 1, "DNS resolver", "Forced for tunneled DNS", 150);
-            _cboDnsResolver.Width = 120; SetPlaceRight(connCard, 1, _cboDnsResolver, 14);
+            _cboDnsResolver.Width = DrawHelper.Px(150);
+            SetRowTitle(connCard, 1, "DNS resolver", "Forced for tunneled DNS", _cboDnsResolver.Width + m + gap);
+            SetPlaceRight(connCard, 1, _cboDnsResolver, m);
             SetDivider(connCard, 1);
-            SetRowTitle(connCard, 2, "Delay-test URL", null, 270);
-            _txtTestUrl.Width = 250; SetPlaceRight(connCard, 2, _txtTestUrl, 14);
+            _txtTestUrl.Width = DrawHelper.Px(280);
+            SetRowTitle(connCard, 2, "Delay-test URL", null, _txtTestUrl.Width + m + gap);
+            SetPlaceRight(connCard, 2, _txtTestUrl, m);
 
             y = SetSection(g, "Startup", y, cardW);
             var startCard = SetCard(g, y, 1, cardW); y += startCard.Height + SetSecGap;
@@ -520,67 +602,91 @@ namespace CS_Ray.UI
             var diagCard = SetCard(g, y, 2, cardW); y += diagCard.Height + SetSecGap;
             SetToggleRow(diagCard, 0, "Verbose log", "Per-connection logging (test runs)", _chkVerbose);
             SetDivider(diagCard, 0);
-            SetRowTitle(diagCard, 1, "TUN test IP", "Advanced; partial-capture", 220);
-            int diY = SetCardPad + SetRowH;
-            _btnUdpTest.Size = new Size(96, 28);
-            _btnUdpTest.Location = new Point(cardW - 96 - 14, diY + (SetRowH - 28) / 2); diagCard.Controls.Add(_btnUdpTest);
-            _txtTunTestIp.SetBounds(cardW - 96 - 14 - 118 - 8, diY + (SetRowH - 24) / 2, 118, 24); diagCard.Controls.Add(_txtTunTestIp);
+            _txtTunTestIp.Width = DrawHelper.Px(130);
+            SetPlaceRight(diagCard, 1, _txtTunTestIp, m + _btnUdpTest.Width + gap); // field first → Tab order
+            SetPlaceRight(diagCard, 1, _btnUdpTest, m);
+            SetRowTitle(diagCard, 1, "TUN test IP", "Advanced; partial-capture", cardW - _txtTunTestIp.Left + gap);
 
             SetSpacer(g, y);
 
             // ── Subscriptions page ──
-            var s = pop.SubsPage; int sy = 12;
+            var s = pop.SubsPage; int sy = DrawHelper.Px(12);
             sy = SetSection(s, "Add subscription", sy, cardW);
             var addCard = SetCard(s, sy, 1, cardW); sy += addCard.Height + SetSecGap;
-            _btnAddSub.Size = new Size(80, 28);
-            _txtSubUrl.SetBounds(16, SetCardPad + (SetRowH - 24) / 2, cardW - 16 - 80 - 14 - 8, 24); addCard.Controls.Add(_txtSubUrl);
-            _btnAddSub.Location = new Point(cardW - 80 - 14, SetCardPad + (SetRowH - 28) / 2); addCard.Controls.Add(_btnAddSub);
+            _txtSubUrl.Width = cardW - m - _btnAddSub.Width - gap - SetInnerX; SetPlaceLeft(addCard, 0, _txtSubUrl); // field first → Tab order
+            SetPlaceRight(addCard, 0, _btnAddSub, m);
 
             sy = SetSection(s, "Your subscriptions", sy, cardW);
-            _listSubs.SetBounds(16, sy, cardW, 232); _listSubs.BorderStyle = BorderStyle.FixedSingle; s.Controls.Add(_listSubs);
-            sy += _listSubs.Height + 10;
-            _btnSubUpdate.Size = new Size(100, 30); _btnSubUpdate.Location = new Point(16, sy); s.Controls.Add(_btnSubUpdate);
-            _btnSubEdit.Size = new Size(100, 30); _btnSubEdit.Location = new Point(124, sy); s.Controls.Add(_btnSubEdit);
-            _btnSubDelete.Size = new Size(100, 30); _btnSubDelete.Location = new Point(232, sy); s.Controls.Add(_btnSubDelete);
-            SetSpacer(s, sy + 40);
+            _listSubs.SetBounds(SetCardX, sy, cardW, DrawHelper.Px(232)); _listSubs.BorderStyle = BorderStyle.FixedSingle; s.Controls.Add(_listSubs);
+            sy += _listSubs.Height + DrawHelper.Px(10);
+            int bx = SetCardX;
+            foreach (var b in new[] { _btnSubUpdate, _btnSubEdit, _btnSubDelete })
+            {
+                FitSetButton(b, bh, DrawHelper.Px(100));
+                b.Location = new Point(bx, sy); s.Controls.Add(b);
+                bx = b.Right + gap;
+            }
+            SetSpacer(s, sy + bh + DrawHelper.Px(10));
         }
 
         // ── Settings sectioned-layout helpers (accent section header + rounded bordered card of rows) ──
-        private const int SetCardX = 16, SetRowH = 46, SetCardPad = 6, SetSecGap = 14, SetSecLabelH = 22;
+        private static readonly Font SetTitleFont = FontHelper.Ui(10f), SetSubFont = FontHelper.Ui(7.75f),
+                                     SetSecFont = FontHelper.Ui(8.25f, FontStyle.Bold), SetBtnFont = FontHelper.Ui(9f);
+        private static int SetCardX => DrawHelper.Px(16);      // card left edge on the page
+        private static int SetInnerX => DrawHelper.Px(16);     // row content left edge inside a card
+        private static int SetCardPad => DrawHelper.Px(6);
+        private static int SetSecGap => DrawHelper.Px(14);
+        private static int SetSecLabelH => SetSecFont.Height + DrawHelper.Px(6);
+        private static int SetSubGap => DrawHelper.Px(2);
+        // A row fits title + subtitle, or a field box, whichever is taller.
+        private static int SetRowH => Math.Max(DrawHelper.Px(46), Math.Max(SetTitleFont.Height + SetSubGap + SetSubFont.Height + DrawHelper.Px(12),
+                                                                           FieldChrome.BoxHeight + DrawHelper.Px(12)));
+
+        // Settings buttons carry their own font (they're measured before being parented into the popup).
+        private static void FitSetButton(Button b, int h, int minW = 0)
+        {
+            b.Font = SetBtnFont;
+            int w = Math.Max(minW > 0 ? minW : DrawHelper.Px(80), TextRenderer.MeasureText(b.Text, SetBtnFont).Width + DrawHelper.Px(24));
+            b.Size = new Size(w, h);
+        }
 
         private int SetSection(Control page, string text, int y, int cardW)
         {
             page.Controls.Add(new Label
             {
-                Text = text.ToUpperInvariant(), Location = new Point(SetCardX + 2, y + 4), AutoSize = false,
-                Size = new Size(cardW, SetSecLabelH), Tag = "accent", ForeColor = ThemeHelper.GetWindowsAccentColor(),
-                BackColor = Color.Transparent, Font = FontHelper.Ui(8.25f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft
+                Text = text.ToUpperInvariant(), Location = new Point(SetCardX + DrawHelper.Px(2), y + DrawHelper.Px(4)), AutoSize = false,
+                Size = new Size(cardW, SetSecLabelH), Tag = "accent", ForeColor = ThemeHelper.Palette().AccentText,
+                BackColor = Color.Transparent, Font = SetSecFont, TextAlign = ContentAlignment.MiddleLeft
             });
-            return y + SetSecLabelH + 4;
+            return y + SetSecLabelH + DrawHelper.Px(4);
         }
 
         private Panel SetCard(Control page, int y, int rows, int cardW)
         {
             int h = rows * SetRowH + 2 * SetCardPad;
-            var card = new Panel { Location = new Point(SetCardX, y), Size = new Size(cardW, h), Tag = "card", BackColor = _dark ? Color.FromArgb(48, 48, 48) : Color.White };
+            var card = new Panel { Location = new Point(SetCardX, y), Size = new Size(cardW, h), Tag = "card", BackColor = ThemeHelper.Palette().Surface };
             card.Paint += (s, e) =>
             {
                 var gr = e.Graphics; gr.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                using (var pen = new Pen(ThemeHelper.IsDark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(224, 224, 230)))
-                using (var pth = DrawHelper.RoundedRect(new Rectangle(0, 0, card.Width - 1, card.Height - 1), 12))
+                using (var pen = new Pen(ThemeHelper.Palette().Border))
+                using (var pth = DrawHelper.RoundedRect(new Rectangle(0, 0, card.Width - 1, card.Height - 1), DrawHelper.Px(12)))
                     gr.DrawPath(pen, pth);
             };
             page.Controls.Add(card);
             return card;
         }
 
+        // Title (+ optional dim subtitle) on the left of a row, vertically centered as a block; rightZone = px kept
+        // free on the right for the row's control.
         private void SetRowTitle(Panel card, int row, string title, string subtitle, int rightZone)
         {
             int iy = SetCardPad + row * SetRowH;
-            int lw = card.Width - 16 - rightZone;
-            card.Controls.Add(new Label { Text = title, Location = new Point(16, subtitle != null ? iy + 6 : iy + (SetRowH - 22) / 2), AutoSize = false, Size = new Size(lw, 22), BackColor = Color.Transparent, Font = FontHelper.Ui(10f), TextAlign = ContentAlignment.MiddleLeft });
+            int lw = Math.Max(DrawHelper.Px(40), card.Width - SetInnerX - rightZone);
+            int th = SetTitleFont.Height, sh = subtitle != null ? SetSubGap + SetSubFont.Height : 0;
+            int ty = iy + (SetRowH - th - sh) / 2;
+            card.Controls.Add(new Label { Text = title, Location = new Point(SetInnerX, ty), AutoSize = false, Size = new Size(lw, th), BackColor = Color.Transparent, Font = SetTitleFont, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false, AutoEllipsis = true });
             if (subtitle != null)
-                card.Controls.Add(new Label { Text = subtitle, Tag = "dim", Location = new Point(16, iy + 27), AutoSize = false, Size = new Size(lw, 16), BackColor = Color.Transparent, Font = FontHelper.Ui(7.75f), TextAlign = ContentAlignment.MiddleLeft });
+                card.Controls.Add(new Label { Text = subtitle, Tag = "dim", Location = new Point(SetInnerX, ty + th + SetSubGap), AutoSize = false, Size = new Size(lw, SetSubFont.Height), BackColor = Color.Transparent, Font = SetSubFont, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false, AutoEllipsis = true });
         }
 
         private void SetPlaceRight(Panel card, int row, Control ctrl, int margin)
@@ -590,10 +696,17 @@ namespace CS_Ray.UI
             card.Controls.Add(ctrl); ctrl.BringToFront();
         }
 
+        private void SetPlaceLeft(Panel card, int row, Control ctrl)
+        {
+            int iy = SetCardPad + row * SetRowH;
+            ctrl.Location = new Point(SetInnerX, iy + (SetRowH - ctrl.Height) / 2);
+            card.Controls.Add(ctrl); ctrl.BringToFront();
+        }
+
         private void SetToggleRow(Panel card, int row, string title, string subtitle, ToggleSwitch sw)
         {
-            SetRowTitle(card, row, title, subtitle, 64);
-            SetPlaceRight(card, row, sw, 16);
+            SetRowTitle(card, row, title, subtitle, sw.Width + DrawHelper.Px(28));
+            SetPlaceRight(card, row, sw, DrawHelper.Px(16));
             // Touch-friendly: tapping this row's label(s) flips the toggle too (the toggle handles its own click).
             int iy = SetCardPad + row * SetRowH;
             foreach (Control c in card.Controls)
@@ -604,7 +717,8 @@ namespace CS_Ray.UI
         private void SetDivider(Panel card, int row)
         {
             int dy = SetCardPad + (row + 1) * SetRowH;
-            card.Controls.Add(new Panel { Location = new Point(14, dy), Size = new Size(card.Width - 28, 1), Tag = "div", BackColor = _dark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(232, 232, 236) });
+            var p = ThemeHelper.Palette();
+            card.Controls.Add(new Panel { Location = new Point(DrawHelper.Px(14), dy), Size = new Size(card.Width - DrawHelper.Px(28), 1), Tag = "div", BackColor = p.Dark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(232, 232, 236) });
         }
 
         private void SetSpacer(Control page, int y)
@@ -767,6 +881,72 @@ namespace CS_Ray.UI
             }
         }
 
+        // ── Bottom bar layout (system-DPI: DrawHelper.Px design values + measured text) ──
+        // Two button rows on the left (widths fit their longest caption, e.g. "Start Engine"/"Stop Engine"); the two
+        // toggle rows + the slow-mode flag in a column anchored to the RIGHT edge, each label right-aligned against its
+        // toggle — a longer label (bigger font / DPI) grows leftward and can never run into its switch. The column never
+        // moves left over the buttons; the window's minimum width is raised so it always fits.
+        private void LayoutBar()
+        {
+            if (_bar == null || _inLayoutBar) return;
+            _inLayoutBar = true;
+            try
+            {
+                int m = DrawHelper.Px(8), gap = DrawHelper.Px(6);
+                int h1 = Math.Max(DrawHelper.Px(44), _bar.Font.Height + DrawHelper.Px(18));
+                int h2 = Math.Max(DrawHelper.Px(42), _bar.Font.Height + DrawHelper.Px(16));
+                SizeBarButton(_btnEngine, m, m, h1, DrawHelper.Px(128), "Start Engine", "Stop Engine");
+                SizeBarButton(_btnTun, _btnEngine.Right + gap, m, h1, DrawHelper.Px(110), "Start TUN", "Stop TUN");
+                int y2 = m + h1 + gap, x = m;
+                foreach (var b in new[] { _btnTest, _btnTestAll, _btnRemove, _btnClearLog })
+                {
+                    SizeBarButton(b, x, y2, h2, DrawHelper.Px(84), b.Text);
+                    x = b.Right + gap;
+                }
+                int buttonsRight = Math.Max(_btnTun.Right, _btnClearLog.Right);
+
+                int tw = _chkRouteAll.Width, lgap = DrawHelper.Px(10), rm = DrawHelper.Px(12);
+                int labelW = Math.Max(_lblFullTunnel.PreferredWidth, _lblSysProxy.PreferredWidth);
+                int rowH = Math.Max(_chkRouteAll.Height, _lblFullTunnel.PreferredHeight) + DrawHelper.Px(12);
+                int minColX = buttonsRight + DrawHelper.Px(16) + labelW + lgap;
+                int colX = Math.Max(minColX, _bar.ClientSize.Width - rm - tw);
+                PlaceBarToggle(_lblFullTunnel, _chkRouteAll, colX, m, rowH, lgap);
+                PlaceBarToggle(_lblSysProxy, _chkSystemProxy, colX, m + rowH, rowH, lgap);
+                _lblSlow.Location = new Point(colX + tw - _lblSlow.PreferredWidth, m + 2 * rowH);
+
+                _bar.Height = Math.Max(y2 + h2 + m, m + 2 * rowH + _lblSlow.PreferredHeight + m);
+                int minW = Math.Min(minColX + tw + rm + Padding.Horizontal, _maxClientW);
+                if (MinimumSize.Width < minW) MinimumSize = new Size(minW, MinimumSize.Height);
+                if (ClientSize.Width < minW) ClientSize = new Size(minW, ClientSize.Height);
+            }
+            finally { _inLayoutBar = false; }
+        }
+
+        // The log pane flexes: its design height (212 px) when there's room, shrinking (down to 60) so the server list
+        // always keeps ≥ 3 rows — on a short high-DPI work area a fixed log would squeeze the list to nothing.
+        private void LayoutRegions()
+        {
+            if (_bottomRegion == null || _topBar == null || _bar == null || _listProfiles == null) return;
+            int minList = 3 * _listProfiles.ItemHeight;
+            int avail = _content.ClientSize.Height - _topBar.Height - _bar.Height - minList;
+            int logH = Math.Max(DrawHelper.Px(60), Math.Min(DrawHelper.Px(212), avail));
+            int h = _bar.Height + logH;
+            if (_bottomRegion.Height != h) _bottomRegion.Height = h;
+        }
+
+        private static void SizeBarButton(Button b, int x, int y, int h, int minW, params string[] captions)
+        {
+            int w = minW;
+            foreach (var c in captions) w = Math.Max(w, TextRenderer.MeasureText(c, b.Font).Width + DrawHelper.Px(24));
+            b.SetBounds(x, y, w, h);
+        }
+
+        private static void PlaceBarToggle(Label lbl, ToggleSwitch sw, int colX, int y, int rowH, int gap)
+        {
+            sw.Location = new Point(colX, y + (rowH - sw.Height) / 2);
+            lbl.Location = new Point(colX - gap - lbl.PreferredWidth, y + (rowH - lbl.PreferredHeight) / 2);
+        }
+
         // Wrap a ListBox/TextBox with a self-drawn themed scrollbar (TelegArm attach pattern: target Fill, bar Right).
         private Panel WrapWithScrollbar(Control target, out ThemedScrollBar bar)
         {
@@ -778,26 +958,23 @@ namespace CS_Ray.UI
             return host;
         }
 
-        // ── Theme (TelegArm pattern: resolve via ThemeHelper, push into MaterialSkin + re-color body controls) ──
+        // ── Theme (TelegArm pattern: resolve once via ThemeHelper, then re-color the body controls) ──
+        // ThemedForm re-themes its own chrome (title bar, frame) on ThemeChanged; this only caches the resolved
+        // dark/accent that the owner-drawn list rows + scrollbars read.
         private void ApplyTheme()
         {
             _dark = ThemeHelper.IsDark;                       // System → OS, else the override
             _accent = ThemeHelper.GetWindowsAccentColor();
-            _skin.Theme = _dark ? MaterialSkinManager.Themes.DARK : MaterialSkinManager.Themes.LIGHT;
-            var primary = (Primary)(uint)_accent.ToArgb();   // map the Windows accent to MaterialSkin primary
-            // Singleton-trap fix: the MaterialSkin Accent slot (MaterialTextBox underline / floating hint) must be
-            // the SAME Windows accent — NOT the hardcoded Accent.LightBlue200 that any dialog re-poisoned it with.
-            _skin.ColorScheme = new ColorScheme(primary, primary, primary, (Accent)(uint)_accent.ToArgb(), TextShade.WHITE);
         }
 
-        // MaterialSkin themes its own chrome + Material* controls; our plain WinForms body controls don't
-        // auto-theme, so re-color the body to match dark/light (shared with the hamburger popup).
+        // Plain WinForms body controls don't auto-theme, so re-color the body to match dark/light (shared with the
+        // settings popup) through ThemeHelper.RecolorBody.
         private void ApplyPanelColors()
         {
             if (_content == null) return;
             ThemeHelper.RecolorBody(_content);
             if (_lblSlow != null) _lblSlow.ForeColor = Color.Firebrick; // keep the warning color
-            _strip?.Invalidate();                                       // owner-painted strip reads the new skin
+            _strip?.Invalidate();                                       // owner-painted strip reads the new theme
             _listProfiles?.Invalidate();                                // owner-drawn rows read the new dark/accent
             foreach (var bar in new[] { _logScroll, _listScroll })      // self-drawn scrollbars follow the theme
                 if (bar != null) { bar.IsDark = _dark; bar.AccentColor = _accent; bar.Invalidate(); }
@@ -805,8 +982,8 @@ namespace CS_Ray.UI
 
         // Theme is now chosen from the ☰ Theme▸ submenu (see SetThemeMode); ThemeChanged → OnSystemThemeChanged.
 
-        // Re-apply on OS theme/accent change (System mode) or a manual switch. BeginInvoke → UI thread; full
-        // repaint avoids the classic MaterialSkin half-repaint after a theme flip (TelegArm fix).
+        // Re-apply on OS theme/accent change (System mode) or a manual switch. BeginInvoke → UI thread; a full
+        // repaint avoids a half-repainted window after a theme flip (TelegArm fix).
         private void OnSystemThemeChanged()
         {
             if (IsDisposed) return;

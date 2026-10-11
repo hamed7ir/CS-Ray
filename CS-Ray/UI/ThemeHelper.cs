@@ -10,6 +10,76 @@ namespace CS_Ray.UI
     /// <summary>How the app decides light vs. dark: follow the OS, or a fixed override.</summary>
     public enum ThemeMode { System, Light, Dark }
 
+    /// <summary>An owner-drawn control that colors itself from <see cref="ThemeHelper"/> (it also listens to
+    /// ThemeChanged). <see cref="ThemeHelper.RecolorBody"/> calls <see cref="ApplyTheme"/> instead of recoloring it
+    /// or walking its children.</summary>
+    internal interface ISelfThemed
+    {
+        void ApplyTheme();
+    }
+
+    /// <summary>One snapshot of the app palette (see <see cref="ThemeHelper.Palette"/>). Surface / Field / Text are the
+    /// exact body colors RecolorBody has always applied; the rest are the shared chrome + input-field colors.</summary>
+    public sealed class ThemePalette
+    {
+        public readonly bool Dark;
+        public readonly Color Accent;
+        public readonly Color AccentText;   // the accent as TEXT / outline on Surface — contrast-adjusted (see ctor)
+        public readonly Color OnAccent;     // text / glyphs drawn ON an accent fill: white, or near-black on a pale accent
+        public readonly Color Surface;      // page / body background
+        public readonly Color Field;        // text-entry background
+        public readonly Color Text;         // primary text
+        public readonly Color Dim;          // secondary text (labels, hints)
+        public readonly Color Border;       // card / window edge line
+        public readonly Color InputBorder;  // unfocused input-field ring
+        public readonly Color Footer;       // dialog footer strip
+        public readonly Color Error;        // validation / warning text (readable on both surfaces)
+
+        internal ThemePalette(bool dark, Color accent)
+        {
+            Dark = dark;
+            Accent = accent;
+            Surface = dark ? Color.FromArgb(48, 48, 48) : Color.White;
+            Field = dark ? Color.FromArgb(60, 60, 60) : Color.White;
+            Text = dark ? Color.Gainsboro : Color.Black;
+            Dim = dark ? Color.FromArgb(150, 150, 158) : Color.FromArgb(120, 120, 128);
+            Border = dark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(224, 224, 230);
+            InputBorder = dark ? Color.FromArgb(88, 88, 94) : Color.FromArgb(200, 200, 206);
+            Footer = dark ? Color.FromArgb(40, 40, 40) : Color.FromArgb(243, 243, 245);
+            Error = dark ? Color.FromArgb(240, 110, 110) : Color.Firebrick;
+            AccentText = Readable(accent, Surface, dark);
+            OnAccent = OnColor(accent);
+        }
+
+        /// <summary>Foreground for text drawn on <paramref name="fill"/>: white when it reads at ≥ 3:1, else near-black
+        /// (a pale custom accent — yellow, cyan — would otherwise leave the title bar / primary buttons unreadable).</summary>
+        public static Color OnColor(Color fill) => Contrast(fill, Color.White) >= 3.0 ? Color.White : Color.FromArgb(24, 24, 24);
+
+        /// <summary>The accent nudged toward white (dark theme) / black (light theme) until it reads against
+        /// <paramref name="bg"/> at ≥ 3:1 (WCAG large-text / UI-component contrast) — what Windows' accent "light"
+        /// variants do. A deep accent (e.g. dark purple) is otherwise invisible as text or an outline on a dark
+        /// surface. Fills (title bar, primary buttons, toggles) keep the raw accent with white on top.</summary>
+        public static Color Readable(Color accent, Color bg, bool dark)
+        {
+            Color target = dark ? Color.White : Color.Black;
+            Color c = accent;
+            for (int i = 1; i <= 10 && Contrast(c, bg) < 3.0; i++) c = DrawHelper.Blend(accent, target, i * 0.08f);
+            return c;
+        }
+
+        private static double Contrast(Color a, Color b)
+        {
+            double la = Luminance(a), lb = Luminance(b);
+            return (Math.Max(la, lb) + 0.05) / (Math.Min(la, lb) + 0.05);
+        }
+
+        private static double Luminance(Color c)
+        {
+            Func<int, double> ch = v => { double s = v / 255.0; return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4); };
+            return 0.2126 * ch(c.R) + 0.7152 * ch(c.G) + 0.0722 * ch(c.B);
+        }
+    }
+
     /// <summary>
     /// Reads the Windows accent color + light/dark preference and raises <see cref="ThemeChanged"/> when either
     /// changes at runtime. Holds the app-wide <see cref="Mode"/>. Ported from TelegArm's proven ThemeHelper —
@@ -25,8 +95,37 @@ namespace CS_Ray.UI
         private static readonly Color DefaultAccent = Color.FromArgb(0, 120, 215); // Windows default blue
 
         private static ThemeMode _mode = ThemeMode.System;
+        private static Color? _accentOverride;   // null = follow the Windows accent (DroidFinestra's AccentOverride)
 
         public static ThemeMode Mode => _mode;
+
+        /// <summary>The user's fixed accent, or null when the app follows the Windows accent.</summary>
+        public static Color? AccentOverride => _accentOverride;
+
+        /// <summary>Sets the accent override WITHOUT notifying (startup, before any form reads it).</summary>
+        public static void InitAccent(Color? accent) => _accentOverride = accent;
+
+        /// <summary>Sets (or clears, with null) the accent override and raises <see cref="ThemeChanged"/> — every
+        /// themed control recolors live, the same path a Windows accent change takes.</summary>
+        public static void SetAccent(Color? accent)
+        {
+            if (_accentOverride.HasValue == accent.HasValue
+                && (!accent.HasValue || _accentOverride.Value.ToArgb() == accent.Value.ToArgb())) return;
+            _accentOverride = accent;
+            ThemeChanged?.Invoke();
+        }
+
+        /// <summary>"#RRGGBB" → Color, or null for empty/invalid (= follow Windows).</summary>
+        public static Color? ParseAccent(string s)
+        {
+            s = (s ?? "").Trim().TrimStart('#');
+            int v;
+            if (s.Length != 6 || !int.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out v)) return null;
+            return Color.FromArgb((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+        }
+
+        /// <summary>Color → "#RRGGBB"; null → "" (follow Windows).</summary>
+        public static string FormatAccent(Color? c) => c.HasValue ? "#" + (c.Value.ToArgb() & 0xFFFFFF).ToString("X6") : "";
 
         /// <summary>Sets the mode WITHOUT notifying — use once at startup before any form reads the theme.</summary>
         public static void InitMode(ThemeMode mode) => _mode = mode;
@@ -54,6 +153,7 @@ namespace CS_Ray.UI
         /// </summary>
         public static Color GetWindowsAccentColor()
         {
+            if (_accentOverride.HasValue) return _accentOverride.Value;   // a user-picked accent wins (DroidFinestra)
             if (!IsWindows10OrGreater())
             {
                 LogAccentDiagOnce();   // one-shot [ACCENT] truth line so the 8.1 read + decode is verifiable by log
@@ -150,29 +250,31 @@ namespace CS_Ray.UI
             _listening = false;
         }
 
+        /// <summary>The resolved colors for one paint / recolor pass. Reads the registry (dark + accent) once — take a
+        /// snapshot per pass instead of calling <see cref="IsDark"/> per color. Same values RecolorBody has always used.</summary>
+        public static ThemePalette Palette() => new ThemePalette(IsDark, GetWindowsAccentColor());
+
         // Re-color plain WinForms controls (TextBox/ComboBox/CheckBox/Button/Label/Panel/ListBox) to match the
-        // resolved dark/light. MaterialSkin.Controls.* self-theme — they're skipped. Shared by the main form body
-        // and the settings popup so both stay consistent on a theme flip.
+        // resolved dark/light. Self-themed controls (ISelfThemed: title bar, themed text/combo fields) re-theme
+        // themselves and aren't descended into. Shared by the main form body and the settings popup so both stay
+        // consistent on a theme flip.
         public static void RecolorBody(Control root)
         {
             if (root == null) return;
-            bool dark = IsDark;
-            Color bg = dark ? Color.FromArgb(48, 48, 48) : Color.White;
-            Color field = dark ? Color.FromArgb(60, 60, 60) : Color.White;
-            Color fg = dark ? Color.Gainsboro : Color.Black;
-            root.BackColor = bg;
-            RecolorChildren(root, dark, bg, field, fg);
+            var p = Palette();
+            root.BackColor = p.Surface;
+            RecolorChildren(root, p.Dark, p.Surface, p.Field, p.Text, p.AccentText);
         }
 
         // Tag-aware: Labels tagged "accent" take the Windows accent, "dim" a muted gray; Panels tagged "div" become a
         // border line, "card" get the page bg + a repaint (their rounded border is owner-drawn). Owner-painted
         // controls (RoundedButton / ToggleSwitch) just invalidate. One pass shared by the main body, settings, drawer.
-        private static void RecolorChildren(Control parent, bool dark, Color bg, Color field, Color fg)
+        private static void RecolorChildren(Control parent, bool dark, Color bg, Color field, Color fg, Color accentText)
         {
             foreach (Control c in parent.Controls)
             {
-                if (c.GetType().Namespace == "MaterialSkin.Controls") continue; // self-themed
-                if (c is RoundedButton || c is ToggleSwitch) { c.Invalidate(); RecolorChildren(c, dark, bg, field, fg); continue; }
+                if (c is ISelfThemed st) { st.ApplyTheme(); continue; } // owns its colors (incl. any inner TextBox)
+                if (c is RoundedButton || c is ToggleSwitch) { c.Invalidate(); RecolorChildren(c, dark, bg, field, fg, accentText); continue; }
                 string tag = c.Tag as string;
                 if (c is TextBox tb) { tb.BackColor = field; tb.ForeColor = fg; }
                 else if (c is ListBox lb) { lb.BackColor = field; lb.ForeColor = fg; }
@@ -181,7 +283,7 @@ namespace CS_Ray.UI
                 else if (c is Button btn) { btn.FlatStyle = FlatStyle.Flat; btn.BackColor = field; btn.ForeColor = fg; }
                 else if (c is Label lbl)
                 {
-                    if (tag == "accent") lbl.ForeColor = GetWindowsAccentColor();
+                    if (tag == "accent") lbl.ForeColor = accentText;   // contrast-safe on the surface
                     else if (tag == "dim") lbl.ForeColor = dark ? Color.FromArgb(150, 150, 158) : Color.FromArgb(120, 120, 128);
                     else lbl.ForeColor = fg;
                 }
@@ -190,7 +292,7 @@ namespace CS_Ray.UI
                     if (tag == "div") pnl.BackColor = dark ? Color.FromArgb(58, 58, 64) : Color.FromArgb(232, 232, 236);
                     else { pnl.BackColor = bg; if (tag == "card") pnl.Invalidate(); }
                 }
-                RecolorChildren(c, dark, bg, field, fg);
+                RecolorChildren(c, dark, bg, field, fg, accentText);
             }
         }
 

@@ -12,33 +12,42 @@ namespace CS_Ray.UI
     /// </summary>
     public class ThemedContextMenuStrip : ContextMenuStrip
     {
+        private static readonly ThemedMenuRenderer SharedRenderer = new ThemedMenuRenderer();
+
         static ThemedContextMenuStrip()
         {
-            ToolStripManager.Renderer = new ThemedMenuRenderer(); // one renderer for ALL menus + sub-menus
+            ToolStripManager.Renderer = SharedRenderer; // sub-menus (ManagerRenderMode) use it too
         }
 
         public ThemedContextMenuStrip()
         {
-            RenderMode = ToolStripRenderMode.ManagerRenderMode;
+            Renderer = SharedRenderer;   // our own renderer explicitly — not whatever the manager holds right now
             Font = FontHelper.Ui(9.5f);
+            ApplyColors();
+            ThemeHelper.ThemeChanged += OnThemeChanged;
+        }
+
+        private void ApplyColors()
+        {
             BackColor = ThemedMenuColors.Background;
             ForeColor = ThemedMenuColors.Text;
-            ThemeHelper.ThemeChanged += OnThemeChanged;
         }
 
         private void OnThemeChanged()
         {
             if (IsDisposed) return;
-            try
-            {
-                BeginInvoke((Action)(() =>
-                {
-                    BackColor = ThemedMenuColors.Background;
-                    ForeColor = ThemedMenuColors.Text;
-                    Invalidate(true);
-                }));
-            }
-            catch { }
+            if (!IsHandleCreated) { ApplyColors(); return; }   // no handle → BeginInvoke would throw and drop the change
+            try { BeginInvoke((Action)(() => { ApplyColors(); Invalidate(true); })); } catch { }
+        }
+
+        // Long-lived menus (the tray menu) re-assert theme + renderer on every open, so a missed theme change (or
+        // WinForms swapping the manager renderer after a system theme/visual-style change) can never stick.
+        protected override void OnOpening(System.ComponentModel.CancelEventArgs e)
+        {
+            if (!(ToolStripManager.Renderer is ThemedMenuRenderer)) ToolStripManager.Renderer = SharedRenderer;
+            if (Renderer != SharedRenderer) Renderer = SharedRenderer;
+            ApplyColors();
+            base.OnOpening(e);
         }
 
         protected override void Dispose(bool disposing)

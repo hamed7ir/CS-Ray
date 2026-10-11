@@ -24,7 +24,7 @@ namespace CS_Ray.UI
         private const int SB_VERT = 1;
         private const int WM_VSCROLL = 0x0115, WM_MOUSEWHEEL = 0x020A, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_LBUTTONUP = 0x0202, WM_SIZE = 0x0005;
         private const int EM_GETLINECOUNT = 0x00BA, EM_GETFIRSTVISIBLELINE = 0x00CE, EM_LINESCROLL = 0x00B6;
-        private const int Thickness = 11;
+        private static int Thickness => DrawHelper.Px(11);   // 11 design px at the system DPI
 
         private readonly Control _target;
         private readonly bool _isList;
@@ -100,10 +100,11 @@ namespace CS_Ray.UI
             Metrics(out int total, out int view, out int value, out int maxVal);
             if (total <= view || view <= 0) return Rectangle.Empty;
             int len = Height;
-            int thumb = Math.Max(28, (int)((long)len * view / total));
+            int thumb = Math.Max(DrawHelper.Px(28), (int)((long)len * view / total));
             if (thumb >= len) return Rectangle.Empty;
             int off = (int)((long)(len - thumb) * value / maxVal);
-            return new Rectangle(2, off, Width - 4, thumb);
+            int inset = Math.Max(2, Width / 5);
+            return new Rectangle(inset, off, Width - 2 * inset, thumb);
         }
 
         private void ScrollTo(int value)
@@ -176,7 +177,7 @@ namespace CS_Ray.UI
             Color thumb = _dragging || _hoverThumb
                 ? (IsDark ? Lighten(AccentColor) : AccentColor)
                 : (IsDark ? Color.FromArgb(95, 95, 100) : Color.FromArgb(190, 190, 196));
-            int radius = (Thickness - 4) / 2;
+            int radius = Math.Max(1, t.Width / 2);
             using (var b = new SolidBrush(thumb))
             using (var path = RoundedRect(t, radius))
                 g.FillPath(b, path);
