@@ -7,7 +7,7 @@ namespace CS_Ray.Core.Protocol
     /// <summary>
     /// A per-destination UDP association through the proxy. The TUN UdpHandler NAT table creates one per
     /// flow, sends app datagrams via <see cref="SendAsync"/>, and writes replies from <see cref="ReceiveAsync"/>
-    /// back into the TUN. Implemented by VlessUdpSession (E1); VMess UDP plugs in here later (E4).
+    /// back into the TUN. Implemented by VlessUdpSession and VMessUdpSession.
     /// </summary>
     public interface IUdpOutbound : IDisposable
     {

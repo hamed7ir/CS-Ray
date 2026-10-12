@@ -95,8 +95,8 @@ namespace CS_Ray.Core.Tun
             Buffer.BlockCopy(pkt, payloadOff, payload, 0, payloadLen);
 
             // DNS (53): always resolve, leak-safe. Force ALL DNS to the chosen public resolver (not whatever
-            // ISP/Iranian server the OS aimed it at). If we have a native UDP outbound (VLESS), tunnel it as UDP;
-            // otherwise (VMess/SS — native UDP lands in E4) fall back to DNS-over-TCP through the engine, which
+            // ISP/Iranian server the OS aimed it at). If we have a native UDP outbound (VLESS / VMess), tunnel it as UDP;
+            // otherwise (Shadowsocks, plain proxies, XHTTP) fall back to DNS-over-TCP through the engine, which
             // works over ANY outbound. The reply is rewritten to come from the original server.
             if (dstPort == 53)
             {
@@ -120,7 +120,7 @@ namespace CS_Ray.Core.Tun
         }
 
         // DNS-over-TCP to the resolver THROUGH the engine (SOCKS5 on loopback) — works for any outbound
-        // protocol. Used when there's no native UDP outbound (VMess/SS before E4). Runs off the read thread.
+        // protocol. Used when there's no native UDP outbound armed. Runs off the read thread.
         private void DnsViaEngine(uint srcIp, ushort srcPort, uint origDstIp, ushort dstPort, uint resolver, byte[] query)
         {
             try

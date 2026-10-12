@@ -7,6 +7,13 @@ using System.Threading.Tasks;
 
 namespace CS_Ray.Core
 {
+    /// <summary>A server stream that can signal "no more data from the client" in-band while still reading (VMess sends
+    /// an empty chunk; the server then half-closes its connection to the target).</summary>
+    public interface IHalfClosable
+    {
+        Task CloseWriteAsync(CancellationToken ct);
+    }
+
     /// <summary>
     /// Protocol-agnostic bidirectional relay: two independent pump loops, each with its own buffer.
     ///
@@ -65,7 +72,16 @@ namespace CS_Ray.Core
                 {
                     if (first == up)
                     {
-                        // The app finished sending (e.g. TUN passed on its FIN): keep the response coming.
+                        // The app finished sending (e.g. TUN passed on its FIN): pass that on when the protocol can say
+                        // it in-band (Xray's VMess client does), then keep the response coming.
+                        if (server is IHalfClosable hc)
+                        {
+                            // Bounded: a stalled uplink must not keep the downlink-idle teardown from running.
+                            Task cw;
+                            try { cw = hc.CloseWriteAsync(ct); } catch (Exception ex) { cw = Task.FromException(ex); }
+                            var observed = cw.ContinueWith(t => { var unused = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+                            await Task.WhenAny(cw, Task.Delay(DownlinkOnlyMs, ct)).ConfigureAwait(false);
+                        }
                         await WaitOrIdleAsync(down, () => Interlocked.Read(ref st.LastDown), DownlinkOnlyMs, ct).ConfigureAwait(false);
                     }
                     else if (clientSocket != null)

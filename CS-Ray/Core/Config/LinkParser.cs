@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -18,8 +19,8 @@ namespace CS_Ray.Core.Config
 
     /// <summary>
     /// Parses vless:// / vmess:// / ss:// share links into a <see cref="ProxyProfile"/>.
-    /// Rejects (with a specific reason) anything the managed engine can't run — non tcp/ws
-    /// transports, Reality/XTLS, legacy VMess (alterId>0), and non-AEAD Shadowsocks ciphers.
+    /// Tags (with a specific reason) anything the managed engine can't run — e.g. grpc / h2 / kcp transports,
+    /// VMess over REALITY, unsupported XTLS flows or XHTTP modes, and non-AEAD Shadowsocks ciphers.
     /// Never throws on a bad link; returns a <see cref="ParseResult"/> carrying the reason.
     /// </summary>
     public static class LinkParser
@@ -37,7 +38,8 @@ namespace CS_Ray.Core.Config
             try
             {
                 if (link.StartsWith("vless://", StringComparison.OrdinalIgnoreCase)) return ParseVless(link);
-                if (link.StartsWith("vmess://", StringComparison.OrdinalIgnoreCase)) return ParseVmess(link);
+                if (link.StartsWith("vmess://", StringComparison.OrdinalIgnoreCase))
+                    return IsStandardVmess(link) ? ParseVmessStandard(link) : ParseVmess(link);
                 if (link.StartsWith("ss://", StringComparison.OrdinalIgnoreCase)) return ParseSs(link);
                 // Plain proxy outbounds (connect THROUGH a socks5/http proxy).
                 if (link.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase) || link.StartsWith("socks://", StringComparison.OrdinalIgnoreCase))
@@ -148,7 +150,7 @@ namespace CS_Ray.Core.Config
         }
 
         // Recognized-but-unsupported reason for a vless/vmess transport+security combo (null = supported).
-        // VLESS supports xhttp over TLS (packet-up); VMess does not (engine VMess is raw-TCP only).
+        // VLESS supports xhttp (packet-up over TLS, stream-one over REALITY) and REALITY; VMess has no REALITY.
         internal static string UnsupportedReason(string type, string security, string flow, bool allowXhttp, bool allowReality)
         {
             string nflow = Protocol.VlessProtocol.NormalizeFlow(flow);
@@ -190,12 +192,20 @@ namespace CS_Ray.Core.Config
             return auto || m == "packet-up" ? null : "XHTTP mode '" + m + "' over TLS — not supported yet (packet-up only)";
         }
 
-        /// <summary>The engine speaks VMess over raw TCP only (optionally with the http header camouflage).</summary>
-        internal static string VmessTransportReason(string net, bool useTls)
+        /// <summary>VMess rides the same chain as VLESS — tcp (optional http header) or ws, TLS or not, and XHTTP
+        /// packet-up over TLS — nothing else.</summary>
+        internal static string VmessTransportReason(string net)
         {
-            if (net != "tcp") return "VMess over '" + net + "' — unsupported (raw TCP only)";
-            if (useTls) return "VMess over TLS — unsupported (raw TCP only)";
+            if (net != "tcp" && net != "ws" && net != "xhttp") return "VMess over '" + net + "' — unsupported (tcp, ws or xhttp only)";
             return null;
+        }
+
+        /// <summary>Every VMess rule, from the profile's own fields: transport + security (no REALITY), XHTTP mode.
+        /// alterId is not a rule: like Xray's client (which has no alterId) the engine always speaks AEAD.</summary>
+        internal static string VmessReason(ProxyProfile p, string security)
+        {
+            string net = NormalizeNetwork(p.Network);
+            return UnsupportedReason(net, security, null, allowXhttp: true, allowReality: false) ?? VmessTransportReason(net) ?? XhttpModeReason(p);
         }
 
         /// <summary>VLESS Encryption (encryption=mlkem768x25519plus…) isn't implemented; only "none" is.</summary>
@@ -215,7 +225,7 @@ namespace CS_Ray.Core.Config
             if (p.Protocol == "vless")
                 return UnsupportedReason(net, sec, p.Flow, allowXhttp: true, allowReality: true) ?? RealityParamsReason(p) ?? HeaderComboReason(p) ?? XhttpModeReason(p);
             if (p.Protocol == "vmess")
-                return UnsupportedReason(net, sec, null, allowXhttp: false, allowReality: false) ?? VmessTransportReason(net, p.UseTls);
+                return VmessReason(p, sec);
             return null;
         }
 
@@ -249,17 +259,31 @@ namespace CS_Ray.Core.Config
         }
 
         // ---------------- VMESS ----------------
-        // vmess://base64( { add, port, id, aid, scy, net, type, host, path, tls, sni, ps } )
+        // v2rayN: vmess://base64( { add, port, id, aid, scy, net, type, host, path, tls, sni, alpn, fp, insecure, ps } )
+        // net=tcp: type=http is the header camouflage (host / path are comma lists); net=xhttp: type is the mode
+        // (3x-ui writes a top-level "mode" instead). aid is ignored — the engine always speaks AEAD, like Xray.
         private static ParseResult ParseVmess(string link)
         {
             var json = Encoding.UTF8.GetString(DecodeBase64(link.Substring("vmess://".Length)));
             var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
-            string S(string k) => d != null && d.ContainsKey(k) && d[k] != null ? d[k].ToString() : null;
+            string S(string k)
+            {
+                if (d == null || !d.TryGetValue(k, out var v) || v == null) return null;
+                if (v is System.Collections.IDictionary) return new JavaScriptSerializer().Serialize(v);   // a JSON object stays JSON
+                if (v is System.Collections.IEnumerable list && !(v is string))
+                {
+                    var items = list.Cast<object>().Where(x => x != null).ToList();
+                    return items.Any(x => x is System.Collections.IEnumerable && !(x is string))
+                        ? new JavaScriptSerializer().Serialize(v)                       // nested: keep as JSON
+                        : string.Join(",", items.Select(x => x.ToString()));           // a list of scalars: comma-join
+                }
+                return v.ToString();
+            }
 
-            int aid = 0; int.TryParse(S("aid"), out aid);
             int port; int.TryParse(S("port"), out port);
             var net = NormalizeNetwork(S("net"));
-            var tls = (S("tls") ?? "").ToLowerInvariant();
+            var tls = (S("tls") ?? "").Trim().ToLowerInvariant();
+            string type = (S("type") ?? "").Trim();
 
             var p = new ProxyProfile
             {
@@ -269,19 +293,71 @@ namespace CS_Ray.Core.Config
                 Port = port,
                 Name = S("ps"),
                 Network = net,
-                WsHost = S("host"),
+                WsHost = net == "ws" ? FirstOfList(S("host") ?? "") : S("host"),   // ws takes one Host (v2rayN sends it raw)
                 WsPath = string.IsNullOrEmpty(S("path")) ? "/" : S("path"),
                 Sni = S("sni"),
                 UseTls = tls == "tls" || tls == "reality",
                 VmessSecurity = string.IsNullOrEmpty(S("scy")) ? "auto" : S("scy"),
-                HeaderType = net == "tcp" && string.Equals(S("type"), "http", StringComparison.OrdinalIgnoreCase) ? "http" : null
+                Fingerprint = S("fp"),
+                AllowInsecure = IsTrue(S("insecure")) || IsTrue(S("allowInsecure")),
+                HeaderType = net == "tcp" && string.Equals(type, "http", StringComparison.OrdinalIgnoreCase) ? "http" : null
             };
+            if (net == "xhttp")
+            {
+                string mode = S("mode");
+                p.XhttpMode = !string.IsNullOrEmpty(mode) ? mode : type.Length > 0 && !type.Equals("none", StringComparison.OrdinalIgnoreCase) ? type : null;
+                p.XhttpExtra = S("extra");
+                // 3x-ui flattens extra's keys (downloadSettings, xmux, …) into the top level of the JSON.
+                if (d.ContainsKey("downloadSettings") && (p.XhttpExtra ?? "").IndexOf("downloadSettings", StringComparison.OrdinalIgnoreCase) < 0)
+                    p.XhttpExtra = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "downloadSettings", d["downloadSettings"] } });
+            }
             if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
-            string reason = aid > 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported"
-                          : UnsupportedReason(net, tls, null, allowXhttp: false, allowReality: false) ?? VmessTransportReason(net, p.UseTls);
+            string reason = VmessReason(p, tls);
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
         }
+
+        // Xray's standard share link (XTLS/Xray-core discussion #716) has '@' before the host — never part of base64.
+        private static bool IsStandardVmess(string link)
+        {
+            string rest = link.Substring("vmess://".Length);
+            int cut = rest.IndexOfAny(new[] { '#', '?' });
+            return (cut >= 0 ? rest.Substring(0, cut) : rest).IndexOf('@') >= 0;
+        }
+
+        // vmess://uuid@host:port?type=&security=&encryption=&sni=&host=&path=&headerType=&fp=&mode=&extra=#name
+        private static ParseResult ParseVmessStandard(string link)
+        {
+            var uri = new Uri(link);
+            var q = ParseQuery(uri.Query);
+            var type = NormalizeNetwork(Get(q, "type"));
+            var security = (Get(q, "security") ?? "").Trim().ToLowerInvariant();
+            var p = new ProxyProfile
+            {
+                Protocol = "vmess",
+                Uuid = Uri.UnescapeDataString(uri.UserInfo),
+                Server = uri.Host,
+                Port = uri.Port,
+                Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
+                Network = type,
+                Sni = Get(q, "sni"),
+                WsHost = Get(q, "host"),
+                WsPath = string.IsNullOrEmpty(Get(q, "path")) ? "/" : Get(q, "path"),
+                UseTls = security == "tls" || security == "reality",
+                VmessSecurity = string.IsNullOrEmpty(Get(q, "encryption")) ? "auto" : Get(q, "encryption"),
+                Fingerprint = Get(q, "fp"),
+                AllowInsecure = IsTrue(Get(q, "allowInsecure")) || IsTrue(Get(q, "insecure")) || IsTrue(Get(q, "allow_insecure")),
+                HeaderType = type == "tcp" && string.Equals(Get(q, "headerType"), "http", StringComparison.OrdinalIgnoreCase) ? "http" : null
+            };
+            if (type == "xhttp") { p.XhttpMode = Get(q, "mode"); p.XhttpExtra = Get(q, "extra"); }
+            if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
+
+            string reason = VmessReason(p, security);
+            return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
+        }
+
+        private static bool IsTrue(string v)
+            => v != null && (v.Trim() == "1" || v.Trim().Equals("true", StringComparison.OrdinalIgnoreCase));
 
         // ---------------- SHADOWSOCKS ----------------
         // SIP002: ss://base64url(method:password)@host:port#name

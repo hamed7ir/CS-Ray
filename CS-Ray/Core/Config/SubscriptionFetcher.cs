@@ -99,7 +99,7 @@ namespace CS_Ray.Core.Config
         // Multi-format decode, tried in order: base64→URIs (3x-ui), plain URIs, Clash YAML (V2Board/SSPanel
         // "clash"), sing-box JSON. Tolerant per line/entry — a bad/unsupported one is skipped+logged, never fails
         // the whole sub. Returns ≥1 usable server on success.
-        private static List<ProxyProfile> Decode(string body, Action<string> log)
+        internal static List<ProxyProfile> Decode(string body, Action<string> log)
         {
             string raw = (body ?? "").Trim();
             if (raw.Length == 0) return new List<ProxyProfile>();
@@ -178,12 +178,23 @@ namespace CS_Ray.Core.Config
         private static ProxyProfile ClashProxyToProfile(List<string> lines, Action<string> log)
         {
             var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var l in lines)
+            foreach (var l0 in lines)
             {
+                string l = l0.Trim();
+                // "- {name: a, type: vmess, …}" — subconverter's default (flow) style: the whole proxy on one line.
+                if (l.StartsWith("{")) { YamlFlow.Flatten(l, kv); continue; }
                 int c = l.IndexOf(':');
                 if (c <= 0) continue;
                 string k = l.Substring(0, c).Trim();
-                string v = StripYamlQuotes(l.Substring(c + 1).Trim());
+                string raw = l.Substring(c + 1).Trim();
+                if (raw.StartsWith("{") || raw.StartsWith("["))
+                {
+                    // "ws-opts: {path: /v, headers: {Host: h}}" / "alpn: [h2, http/1.1]": leaves join the flat key space.
+                    string joined = YamlFlow.Flatten(raw, kv);
+                    if (k.Length > 0 && !kv.ContainsKey(k)) kv[k] = joined;
+                    continue;
+                }
+                string v = StripYamlQuotes(StripYamlComment(raw));
                 if (k.Length > 0 && !kv.ContainsKey(k)) kv[k] = v; // first wins (path/Host appear once per block)
             }
             string type = Get(kv, "type").ToLowerInvariant();
@@ -193,24 +204,27 @@ namespace CS_Ray.Core.Config
             string rawNet = Get(kv, "network").ToLowerInvariant();
             string net = (rawNet == "" || rawNet == "tcp" || rawNet == "raw") ? "tcp" : (rawNet == "ws" ? "ws" : rawNet);
             string sni = First(Get(kv, "servername"), Get(kv, "sni"));
+            if (sni.Length == 0 && net == "ws") sni = Get(kv, "Host");   // mihomo: a ws server name falls back to the Host header
             string wsHost = First(Get(kv, "Host"), sni, server);
-            string wsPath = First(Get(kv, "path"), "/");
-            bool insecure = Get(kv, "skip-cert-verify") == "true";
+            // ws-opts.v2ray-http-upgrade switches the transport to HTTPUpgrade (no WebSocket framing) — not ws.
+            string httpUpgrade = net == "ws" && YamlTrue(Get(kv, "v2ray-http-upgrade")) ? "HTTPUpgrade (v2ray-http-upgrade) — unsupported" : null;
+            string wsPath = First(Get(kv, "path"), Get(kv, "ws-path"), "/");   // ws-path: the old flat Clash key
+            bool insecure = YamlTrue(Get(kv, "skip-cert-verify"));
             string name = First(Get(kv, "name"), server);
             bool reality = kv.ContainsKey("reality-opts");
 
             var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure,
-                                       UseTls = string.Equals(Get(kv, "tls"), "true", StringComparison.OrdinalIgnoreCase) || reality };
+                                       UseTls = YamlTrue(Get(kv, "tls")) || reality };
             string reason = null;
             switch (type)
             {
                 case "vmess":
                     p.Protocol = "vmess"; p.Uuid = Get(kv, "uuid"); p.VmessSecurity = First(Get(kv, "cipher"), "auto");
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
-                    string aid = Get(kv, "alterId");
+                    p.Fingerprint = Get(kv, "client-fingerprint");
+                    // alterId is ignored: the engine always speaks AEAD (as Xray's client, which has no alterId, does).
                     reason = reality ? "REALITY (VMess) — unsupported (VLESS only)"
-                           : (aid.Length > 0 && aid != "0") ? "VMess alterId>0 (legacy/non-AEAD) — unsupported"
-                           : TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet), p.UseTls);
+                           : httpUpgrade ?? TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet));
                     break;
                 case "vless":
                     p.Protocol = "vless"; p.Uuid = Get(kv, "uuid");
@@ -223,7 +237,7 @@ namespace CS_Ray.Core.Config
                         p.Reality = true; p.RealityPublicKey = Get(kv, "public-key"); p.RealityShortId = Get(kv, "short-id");
                     }
                     p.Fingerprint = Get(kv, "client-fingerprint");
-                    reason = (reality ? RealityReason(p, rawNet, flow)
+                    reason = httpUpgrade ?? (reality ? RealityReason(p, rawNet, flow)
                            : flow.Length > 0 ? VisionReason(p, rawNet, flow)
                            : TransportReason(rawNet)) ?? LinkParser.EncryptionReason(Get(kv, "encryption"));
                     break;
@@ -307,7 +321,7 @@ namespace CS_Ray.Core.Config
             {
                 rawNet = "ws"; wsPath = First(JStr(transport, "path"), "/");
                 var headers = JObj(transport, "headers");
-                if (headers != null) wsHost = JStr(headers, "Host");
+                if (headers != null) wsHost = JFirst(headers, "Host");   // a string or a list (first value is used)
             }
             else if (ttype.Length > 0) rawNet = ttype; // http/grpc/httpupgrade/quic → unsupported below
             string sni = ""; bool insecure = false, reality = false;
@@ -326,9 +340,9 @@ namespace CS_Ray.Core.Config
                 case "vmess":
                     p.Protocol = "vmess"; p.Uuid = JStr(d, "uuid"); p.VmessSecurity = First(JStr(d, "security"), "auto");
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
+                    // alter_id is ignored: the engine always speaks AEAD (as Xray's client, which has no alterId, does).
                     reason = reality ? "REALITY (VMess) — unsupported (VLESS only)"
-                           : JInt(d, "alter_id") != 0 ? "VMess alterId>0 (legacy/non-AEAD) — unsupported"
-                           : TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet), p.UseTls);
+                           : TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet));
                     break;
                 case "vless":
                     p.Protocol = "vless"; p.Uuid = JStr(d, "uuid");
@@ -402,6 +416,22 @@ namespace CS_Ray.Core.Config
         private static bool LooksLikeYaml(string s)
             => s.IndexOf("proxies:", StringComparison.OrdinalIgnoreCase) >= 0;
 
+        // YAML 1.1 / Clash booleans: true / yes / on, any case.
+        private static bool YamlTrue(string v)
+        {
+            v = (v ?? "").Trim();
+            return v.Equals("true", StringComparison.OrdinalIgnoreCase) || v.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                || v.Equals("on", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // "value # note" → "value" (a quoted value keeps its '#').
+        private static string StripYamlComment(string v)
+        {
+            if (v.Length > 0 && (v[0] == '"' || v[0] == '\'')) return v;
+            int h = v.IndexOf(" #", StringComparison.Ordinal);
+            return h >= 0 ? v.Substring(0, h).TrimEnd() : v;
+        }
+
         private static string StripYamlQuotes(string v)
         {
             if (v.Length >= 2 && ((v[0] == '"' && v[v.Length - 1] == '"') || (v[0] == '\'' && v[v.Length - 1] == '\'')))
@@ -413,6 +443,17 @@ namespace CS_Ray.Core.Config
         private static string First(params string[] vals) { foreach (var v in vals) if (!string.IsNullOrEmpty(v)) return v; return ""; }
 
         private static string JStr(Dictionary<string, object> d, string k) => d != null && d.TryGetValue(k, out var v) && v != null ? v.ToString() : "";
+        // A value that may be a string or a list of strings (sing-box header values): the first one.
+        private static string JFirst(Dictionary<string, object> d, string k)
+        {
+            if (d == null || !d.TryGetValue(k, out var v) || v == null) return "";
+            if (v is System.Collections.IEnumerable list && !(v is string) && !(v is System.Collections.IDictionary))
+            {
+                foreach (var x in list) if (x != null && x.ToString().Length > 0) return x.ToString();
+                return "";
+            }
+            return v.ToString();
+        }
         private static int JInt(Dictionary<string, object> d, string k) { try { return d != null && d.TryGetValue(k, out var v) && v != null ? Convert.ToInt32(v) : 0; } catch { return 0; } }
         private static bool JBool(Dictionary<string, object> d, string k) { try { return d != null && d.TryGetValue(k, out var v) && v != null && Convert.ToBoolean(v); } catch { return false; } }
         private static Dictionary<string, object> JObj(Dictionary<string, object> d, string k) => d != null && d.TryGetValue(k, out var v) ? v as Dictionary<string, object> : null;

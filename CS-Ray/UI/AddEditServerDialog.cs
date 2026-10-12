@@ -31,7 +31,6 @@ namespace CS_Ray.UI
         private readonly ThemedTextBox _txtAddress = NewText("Address (host or IP)");
         private readonly ThemedTextBox _txtPort = NewText("Port");
         private readonly ThemedTextBox _txtUuid = NewText("UUID");
-        private readonly ThemedTextBox _txtAlterId = NewText("AlterId (0 only — AEAD)");
         private readonly ThemedTextBox _txtUser = NewText("Username (optional)");
         private readonly ThemedTextBox _txtPassword = NewText("Password");
         private readonly ThemedTextBox _txtWsHost = NewText("Host (ws / xhttp / http header; comma-separated for http)");
@@ -81,7 +80,7 @@ namespace CS_Ray.UI
             _cboSsMethod.Items.AddRange(SsMethods);
 
             foreach (var c in new Control[] { _cboProtocol, _cboNetwork, _cboHeader, _cboSsMethod, _txtName, _txtAddress,
-                _txtPort, _txtUuid, _txtAlterId, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _cboSecurity, _txtSni,
+                _txtPort, _txtUuid, _txtUser, _txtPassword, _txtWsPath, _txtWsHost, _cboSecurity, _txtSni,
                 _txtPbk, _txtSid, _cboFp, _cboFlow, _lblInsecure, _swInsecure, _lblError, _lblNote })
             { if (!(c is ToggleSwitch)) c.Width = FieldW; Body.Host.Controls.Add(c); } // switches keep their DPI-scaled size
             _txtPort.Width = DrawHelper.Px(120);
@@ -156,7 +155,6 @@ namespace CS_Ray.UI
             Place(_txtAddress, ref y, true);
             Place(_txtPort, ref y, true);
             Place(_txtUuid, ref y, vlessLike);
-            Place(_txtAlterId, ref y, vmess);
             Place(_cboSsMethod, ref y, ss);
             Place(_txtUser, ref y, proxyLike);                 // socks/http(s): optional auth
             Place(_txtPassword, ref y, ss || proxyLike);       // SS password OR proxy password
@@ -252,20 +250,13 @@ namespace CS_Ray.UI
                 string uuid = (_txtUuid.Text ?? "").Trim();
                 if (uuid.Length == 0) return "UUID is required.";
                 try { VlessProtocol.ParseUuid(uuid); } catch { return "UUID is malformed (need 32 hex / 8-4-4-4-12)."; }
-                if (proto == "vmess")
-                {
-                    if (!int.TryParse((_txtAlterId.Text ?? "0").Trim(), out int aid) || aid != 0)
-                        return "Only AlterId 0 (AEAD VMess) is supported.";
-                    prof.VmessSecurity = "auto";
-                }
+                if (proto == "vmess") prof.VmessSecurity = "auto";   // always AEAD (no alterId, like Xray's client)
                 prof.Uuid = uuid;
                 prof.Network = Net;
                 prof.Sni = (_txtSni.Text ?? "").Trim();
                 prof.AllowInsecure = _swInsecure.Checked;
                 string sec = Net == "xhttp" && Sec == "none" ? "tls" : Sec;   // xhttp needs TLS or REALITY
                 prof.UseTls = sec != "none";
-                if (proto == "vmess" && (Net != "tcp" || sec != "none"))
-                    return "VMess is supported over raw tcp only (security none, optional http header).";
                 // Same visibility rule as Relayout: a Flow choice the user can't see doesn't count.
                 bool flowable = proto == "vless" && Net == "tcp" && Hdr != "http" && sec != "none";
                 string flow = flowable && FlowSel != "none" ? FlowSel : null;
@@ -320,7 +311,6 @@ namespace CS_Ray.UI
             _txtAddress.Text = p.Server;
             _txtPort.Text = p.Port.ToString();
             _txtUuid.Text = p.Uuid;
-            _txtAlterId.Text = "0";
             _txtUser.Text = p.ProxyUser;
             // Password field is shared: proxy password for socks/http(s), else the SS password.
             _txtPassword.Text = !string.IsNullOrEmpty(p.ProxyPass) ? p.ProxyPass : p.Password;

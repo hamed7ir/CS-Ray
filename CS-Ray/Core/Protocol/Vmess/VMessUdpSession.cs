@@ -8,7 +8,7 @@ namespace CS_Ray.Core.Protocol.Vmess
 {
     /// <summary>
     /// One VMess UDP association = one destination (mirrors <see cref="VlessUdpSession"/>). Opens the same
-    /// raw-TCP VMess chain as the TCP path but with Command=UDP (0x02). VMess body framing IS per-datagram:
+    /// VMess chain as the TCP path (tcp / ws, TLS or not) but with Command=UDP (0x02). VMess body framing IS per-datagram:
     /// each chunk = one UDP packet, so one WriteAsync (≤8KB) emits one chunk = one datagram, and each chunk
     /// read back = one datagram. The AEAD response header is consumed once, lazily, on the first read.
     /// Dials the pinned ServerIp when set (full tunnel), else ServerHost — keeping the leak-safe pin intact.
@@ -31,17 +31,22 @@ namespace CS_Ray.Core.Protocol.Vmess
 
         public async Task ConnectAsync(string dstHost, int dstPort, CancellationToken ct)
         {
-            // VMess (this build) runs over raw TCP, same as the TCP relay path (+ optional http header camouflage).
-            ITransport outbound = new TcpTransport();
-            if (string.Equals(_cfg.HeaderType, "http", StringComparison.OrdinalIgnoreCase))
-                outbound = new HttpHeaderTransport(outbound, _cfg.WsHost, _cfg.WsPath);
+            // Same chain as the TCP relay path: tcp (optional http header) or ws, with or without TLS.
+            ITransport outbound = TlsTransportFactory.CreateVlessOutbound(_cfg, pooled: true);
             string dial = !string.IsNullOrEmpty(_cfg.ServerIp) ? _cfg.ServerIp : _cfg.ServerHost;
-            await outbound.ConnectAsync(dial, _cfg.ServerPort, ct).ConfigureAwait(false);
-            _outbound = outbound;
-
-            _body = await VmessProtocol.EstablishAsync(
-                outbound.GetStream(), _uuid, dstHost, dstPort,
-                VmessRequest.CommandUdp, null, ct).ConfigureAwait(false);
+            try
+            {
+                await outbound.ConnectAsync(dial, _cfg.ServerPort, ct).ConfigureAwait(false);
+                _body = await VmessProtocol.EstablishAsync(
+                    outbound.GetStream(), _uuid, dstHost, dstPort,
+                    VmessRequest.CommandUdp, null, ct).ConfigureAwait(false);
+                _outbound = outbound;
+            }
+            catch
+            {
+                try { outbound.Close(); } catch { }   // a failed dial/handshake must not leave its socket to the GC
+                throw;
+            }
         }
 
         public async Task SendAsync(byte[] payload, int offset, int count, CancellationToken ct)

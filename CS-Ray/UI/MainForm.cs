@@ -1031,9 +1031,9 @@ namespace CS_Ray.UI
             }
         }
 
-        // Arm TUN UDP tunneling: every captured UDP datagram opens a per-destination VLESS UDP session
-        // through the server (E2). Only VLESS carries UDP today (VMess UDP arrives in E4); for any other
-        // protocol the factory is cleared so UDP is dropped (never relayed direct = no leak).
+        // Arm TUN UDP tunneling: every captured UDP datagram opens a per-destination VLESS / VMess UDP session
+        // through the server. For any other protocol the factory is cleared so UDP is dropped (never relayed
+        // direct = no leak).
         private void ArmUdpOutbound()
         {
             var cfg = _activeConfig;
@@ -1042,12 +1042,12 @@ namespace CS_Ray.UI
             bool xhttp = net == "xhttp" || net == "splithttp";
             try
             {
-                if (proto == "vless" && xhttp)
+                if ((proto == "vless" || proto == "vmess") && xhttp)
                 {
-                    // VlessUdpSession is tcp/ws-only; over xhttp, leave UDP unarmed → DNS rides DNS-over-TCP
-                    // through the engine (xhttp-aware), non-DNS UDP drops (apps fall back to TCP).
+                    // Over xhttp, leave UDP unarmed → DNS rides DNS-over-TCP through the engine (xhttp-aware),
+                    // non-DNS UDP drops (apps fall back to TCP).
                     _tun.SetUdpOutboundFactory(null);
-                    Log("TUN UDP: VLESS-over-XHTTP — DNS tunnels via engine (TCP); non-DNS UDP dropped.");
+                    Log("TUN UDP: " + (proto == "vless" ? "VLESS" : "VMess") + "-over-XHTTP — DNS tunnels via engine (TCP); non-DNS UDP dropped.");
                 }
                 else if (proto == "vless")
                 {

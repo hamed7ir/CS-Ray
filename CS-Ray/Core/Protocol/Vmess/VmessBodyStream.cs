@@ -19,7 +19,7 @@ namespace CS_Ray.Core.Protocol.Vmess
     /// Per-chunk nonce (per direction) = [2-byte BE counter][IV[2..12]], counter from 0.
     /// Options = 0x01 (standard chunk stream): plain 2-byte size, no masking/global padding.
     /// </summary>
-    public class VmessBodyStream : Stream
+    public class VmessBodyStream : Stream, IHalfClosable
     {
         private const int MaxPayload = 8192;
 
@@ -30,6 +30,7 @@ namespace CS_Ray.Core.Protocol.Vmess
         private readonly Action<string> _log;
 
         private ushort _writeCounter;
+        private bool _writeClosed;
         private ushort _readCounter;
         private bool _respHeaderRead;
         private byte[] _leftover;
@@ -63,7 +64,11 @@ namespace CS_Ray.Core.Protocol.Vmess
 
         public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
-            int pos = offset, remaining = count;
+            // Every chunk of the call is sealed into one buffer and written once: VMess chunks are self-delimiting, and a
+            // message-shaped transport (one XHTTP packet-up POST / one ws frame per write) then carries the call whole.
+            int chunks = (count + MaxPayload - 1) / MaxPayload;
+            var wire = new byte[count + chunks * (2 + 16)];
+            int pos = offset, remaining = count, o = 0;
             while (remaining > 0)
             {
                 int chunk = Math.Min(remaining, MaxPayload);
@@ -74,14 +79,28 @@ namespace CS_Ray.Core.Protocol.Vmess
                 var sealed_ = VmessAead.GcmSeal(_reqKey, nonce, plain, null); // chunk + 16-byte tag
                 int size = sealed_.Length;                                    // |P| + 16
 
-                var frame = new byte[2 + size];
-                frame[0] = (byte)(size >> 8);
-                frame[1] = (byte)(size & 0xFF);
-                Buffer.BlockCopy(sealed_, 0, frame, 2, size);
-                await _inner.WriteAsync(frame, 0, frame.Length, ct).ConfigureAwait(false);
-
+                wire[o] = (byte)(size >> 8);
+                wire[o + 1] = (byte)(size & 0xFF);
+                Buffer.BlockCopy(sealed_, 0, wire, o + 2, size);
+                o += 2 + size;
                 pos += chunk; remaining -= chunk;
             }
+            if (o > 0) await _inner.WriteAsync(wire, 0, o, ct).ConfigureAwait(false);
+            await _inner.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        /// <summary>Xray's end-of-request signal (proxy/vmess/outbound): one empty chunk — just the 16-byte tag — after which
+        /// the server half-closes the target. Reading continues. Idempotent.</summary>
+        public async Task CloseWriteAsync(CancellationToken ct)
+        {
+            if (_writeClosed) return;
+            _writeClosed = true;
+            var sealed_ = VmessAead.GcmSeal(_reqKey, ChunkNonce(_reqIV, _writeCounter++), new byte[0], null);
+            var frame = new byte[2 + sealed_.Length];
+            frame[0] = (byte)(sealed_.Length >> 8);
+            frame[1] = (byte)(sealed_.Length & 0xFF);
+            Buffer.BlockCopy(sealed_, 0, frame, 2, sealed_.Length);
+            await _inner.WriteAsync(frame, 0, frame.Length, ct).ConfigureAwait(false);
             await _inner.FlushAsync(ct).ConfigureAwait(false);
         }
 

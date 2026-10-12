@@ -72,8 +72,6 @@ namespace CS_Ray.Core
             return await test.ConfigureAwait(false);
         }
 
-        private static bool HttpHeader(VlessConfig cfg) => string.Equals(cfg.HeaderType, "http", StringComparison.OrdinalIgnoreCase);
-
         private static async Task<DelayResult> RunOnceAsync(VlessConfig cfg, string tHost, int tPort, string tPath, bool tHttps, Holder holder)
         {
             var r = new DelayResult();
@@ -95,13 +93,14 @@ namespace CS_Ray.Core
                 else if (proto == "vmess")
                 {
                     var uuid = VlessProtocol.ParseUuid(cfg.VmessId);
-                    ITransport tcp = new TcpTransport();
-                    if (HttpHeader(cfg)) tcp = new HttpHeaderTransport(tcp, cfg.WsHost, cfg.WsPath);
-                    holder.Outbound = tcp;
-                    await ConnectBudgeted(tcp, cfg.ServerHost, cfg.ServerPort, holder).ConfigureAwait(false);
+                    await TcpReachableGate(cfg.ServerHost, cfg.ServerPort).ConfigureAwait(false); // raw-TCP liveness (≤3s)
+                    sw.Restart(); // time the real chain (TLS / ws upgrade, under the total cap), not the throwaway probe
+                    ITransport o = TlsTransportFactory.CreateVlessOutbound(cfg, pooled: false);   // tcp / ws / xhttp, TLS or not
+                    holder.Outbound = o;
+                    await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);
                     r.ConnectMs = (int)sw.ElapsedMilliseconds;
                     tunnel = await VmessProtocol.EstablishAsync(
-                        tcp.GetStream(), uuid, tHost, tPort, VmessRequest.CommandTcp, null, CancellationToken.None).ConfigureAwait(false);
+                        o.GetStream(), uuid, tHost, tPort, VmessRequest.CommandTcp, null, CancellationToken.None).ConfigureAwait(false);
                 }
                 else if (proto == "socks" || proto == "http" || proto == "https")
                 {
@@ -128,8 +127,6 @@ namespace CS_Ray.Core
                     string netName = (cfg.Network ?? "").Trim().ToLowerInvariant();
                     bool xhttp = netName == "xhttp" || netName == "splithttp";
                     bool ws = netName == "ws";
-                    string hostHdr = !string.IsNullOrEmpty(cfg.WsHost) ? cfg.WsHost
-                        : (!string.IsNullOrEmpty(cfg.Sni) ? cfg.Sni : cfg.ServerHost);
                     ITransport o = TlsTransportFactory.CreateVlessOutbound(cfg, pooled: false);   // private connection: measure a full dial
                     holder.Outbound = o;
                     await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);

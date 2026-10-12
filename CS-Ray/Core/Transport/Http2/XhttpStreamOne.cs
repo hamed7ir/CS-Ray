@@ -82,7 +82,7 @@ namespace CS_Ray.Core.Transport.Http2
             return s;
         }
 
-        private static string AsciiHost(string h)
+        internal static string AsciiHost(string h)
         {
             h = (h ?? "").Trim();
             foreach (char c in h) if (c > 127) { try { return new IdnMapping().GetAscii(h); } catch { break; } }
@@ -161,12 +161,11 @@ namespace CS_Ray.Core.Transport.Http2
             bool customUa = regular.Any(kv => kv.Key == "user-agent");
             if (!customUa)
             {
-                const string v = "147";
-                fill("sec-ch-ua", "\"Chromium\";v=\"" + v + "\", \"Google Chrome\";v=\"" + v + "\", \"Not.A/Brand\";v=\"8\"");
+                fill("sec-ch-ua", BrowserHeaders.ChromeSecChUa);
                 fill("sec-ch-ua-mobile", "?0");
                 fill("sec-ch-ua-platform", "\"Windows\"");
                 fill("dnt", "1");
-                fill("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + v + ".0.0.0 Safari/537.36");
+                fill("user-agent", BrowserHeaders.ChromeUserAgent);
                 fill("accept-language", "en-US,en;q=0.9");
                 fill("sec-fetch-mode", "cors");
                 fill("sec-fetch-dest", "empty");

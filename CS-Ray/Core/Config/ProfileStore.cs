@@ -168,6 +168,23 @@ namespace CS_Ray.Core.Config
                     VlessSecurityHonored = true;
                     MigratedOnLoad = data != null;
                 }
+
+                // VMess used to run over raw TCP only, and alterId>0 was refused. A hand-added (Manual) profile tagged for
+                // those reasons kept its link's transport fields, so re-check it against today's rules — it becomes runnable
+                // without a re-import. Subscription servers wait for their next refresh: older importers could store a
+                // different transport (sing-box collapsed grpc/http to tcp, Clash dropped v2ray-http-upgrade), and an old
+                // XHTTP import kept no mode.
+                foreach (var pr in Profiles)
+                    if (pr != null && pr.Unsupported && pr.Protocol == "vmess"
+                        && string.Equals(GroupOf(pr), ManualGroup, StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals((pr.Network ?? "").Trim(), "xhttp", StringComparison.OrdinalIgnoreCase)
+                        && ((pr.UnsupportedReason ?? "").StartsWith("VMess over", StringComparison.Ordinal)
+                            || (pr.UnsupportedReason ?? "").StartsWith("VMess alterId", StringComparison.Ordinal)))
+                    {
+                        string why = LinkParser.ReasonForEditedProfile(pr);
+                        pr.Unsupported = why != null;
+                        pr.UnsupportedReason = why;
+                    }
             }
             catch
             {

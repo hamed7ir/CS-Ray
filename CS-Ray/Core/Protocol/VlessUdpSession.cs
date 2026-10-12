@@ -33,10 +33,6 @@ namespace CS_Ray.Core.Protocol
         private bool IsWebSocket =>
             string.Equals(_cfg.Network?.Trim(), "ws", StringComparison.OrdinalIgnoreCase);
 
-        private string WsHostHeader =>
-            !string.IsNullOrEmpty(_cfg.WsHost) ? _cfg.WsHost
-            : (!string.IsNullOrEmpty(_cfg.Sni) ? _cfg.Sni : _cfg.ServerHost);
-
         /// <summary>Dial the server and send the VLESS UDP request header for the given destination.</summary>
         public async Task ConnectAsync(string dstHost, int dstPort, CancellationToken ct)
         {

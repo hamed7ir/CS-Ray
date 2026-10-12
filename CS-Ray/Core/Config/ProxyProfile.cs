@@ -99,6 +99,7 @@ namespace CS_Ray.Core.Config
                     break;
                 case "vmess":
                     c.VmessId = Uuid;
+                    c.UseTls = UseTls;   // the engine config defaults to TLS on; a plain VMess server must stay plain
                     c.HeaderType = TcpHeader();
                     c.VmessSecurity = string.IsNullOrEmpty(VmessSecurity) ? "auto" : VmessSecurity;
                     break;

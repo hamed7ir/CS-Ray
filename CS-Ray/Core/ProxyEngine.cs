@@ -43,7 +43,7 @@ namespace CS_Ray.Core
         public string SsMethod = "chacha20-ietf-poly1305";
         public string SsPassword;
 
-        // VMess (AEAD, alterId=0, over raw TCP for this test)
+        // VMess (AEAD; over the same tcp / ws / xhttp chain as VLESS)
         public string VmessId;            // VMess user UUID
         public string VmessSecurity = "auto"; // "auto" → AES-128-GCM body
 
@@ -122,8 +122,7 @@ namespace CS_Ray.Core
                 Log?.Invoke("Outbound: Shadowsocks (" + _config.SsMethod + ") over raw TCP to " +
                             _config.ServerHost + ":" + _config.ServerPort);
             else if (_protocol == "vmess")
-                Log?.Invoke("Outbound: VMess (AEAD, security=" + _config.VmessSecurity + ") over raw TCP to " +
-                            _config.ServerHost + ":" + _config.ServerPort);
+                Log?.Invoke("Outbound: VMess (AEAD, aes-128-gcm) " + ChainSummary());
             else if (_protocol == "socks" || _protocol == "http" || _protocol == "https")
                 Log?.Invoke("Outbound: " + _protocol.ToUpperInvariant() + " proxy to " + _config.ServerHost + ":" + _config.ServerPort +
                             (string.IsNullOrEmpty(_config.ProxyUser) ? "" : " (auth)") +
@@ -137,14 +136,19 @@ namespace CS_Ray.Core
                             " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) + ", fp=" +
                             (string.IsNullOrEmpty(_config.Fingerprint) ? "chrome" : _config.Fingerprint) + ", allowInsecure=" + _config.AllowInsecure + ")");
             else
-                Log?.Invoke("Outbound: VLESS network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") +
-                            (IsHttpHeader ? "+http-header" : "") + (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
-                            _config.ServerHost + ":" + _config.ServerPort +
-                            (IsXhttp || _config.UseTls
-                                ? " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) + ", allowInsecure=" + _config.AllowInsecure
-                                : " (security=none") +
-                            ((IsWebSocket || IsXhttp) ? ", path=" + _config.WsPath + ", host=" + WsHostHeader : "") + ")");
+                Log?.Invoke("Outbound: VLESS " + ChainSummary());
         }
+
+        // "network=ws+TLS to host:port (SNI=…, allowInsecure=…, path=…, host=…)" — the tcp / ws / xhttp chain VLESS and
+        // VMess share.
+        private string ChainSummary()
+            => "network=" + (IsXhttp ? "xhttp(packet-up)" : IsWebSocket ? "ws" : "tcp") +
+               (IsHttpHeader ? "+http-header" : "") + (IsXhttp || _config.UseTls ? "+TLS" : " (no TLS)") + " to " +
+               _config.ServerHost + ":" + _config.ServerPort +
+               (IsXhttp || _config.UseTls
+                   ? " (SNI=" + (string.IsNullOrEmpty(_config.Sni) ? _config.ServerHost : _config.Sni) + ", allowInsecure=" + _config.AllowInsecure
+                   : " (security=none") +
+               ((IsWebSocket || IsXhttp) ? ", path=" + _config.WsPath + ", host=" + WsHostHeader : "") + ")";
 
         public void Stop()
         {
@@ -171,9 +175,7 @@ namespace CS_Ray.Core
             }
         }
 
-        private string WsHostHeader =>
-            !string.IsNullOrEmpty(_config.WsHost) ? _config.WsHost
-            : (!string.IsNullOrEmpty(_config.Sni) ? _config.Sni : _config.ServerHost);
+        private string WsHostHeader => TlsTransportFactory.HostHeaderFor(_config);
 
         // Host to DIAL the server: the pre-resolved IP when pinned (full tunnel), else the hostname (today's path).
         // SNI / WS-Host always stay the hostname, so TLS cert validation is unaffected.
@@ -342,10 +344,9 @@ namespace CS_Ray.Core
         {
             var ct = _cts.Token;
 
-            // VMess AEAD over raw TCP (no TLS for this test); the VMess streams layer crypto on top. Optional tcp
-            // http-header camouflage underneath (type=http in the vmess link).
-            ITransport outbound = new TcpTransport();
-            if (IsHttpHeader) outbound = new HttpHeaderTransport(outbound, _config.WsHost, _config.WsPath);
+            // VMess AEAD over the chain VLESS uses — tcp (optional http header) or ws, with or without TLS; the VMess
+            // streams layer their own crypto on top.
+            ITransport outbound = TlsTransportFactory.CreateVlessOutbound(_config, pooled: true, log: Verbose ? Log : null);
             try
             {
                 await outbound.ConnectAsync(DialHost, _config.ServerPort, ct).ConfigureAwait(false);

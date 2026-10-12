@@ -37,15 +37,16 @@ namespace CS_Ray.Core.Transport
              : (ITransport)new TcpTransport();
 
         /// <summary>
-        /// The whole VLESS outbound chain for a config — the one place the engine, the delay tester and VLESS UDP sessions
-        /// build it: XHTTP (stream-one over HTTP/2 + REALITY, else packet-up over TLS), or the security layer (REALITY /
-        /// TLS / none) with optional WebSocket or tcp http-header camouflage.
+        /// The whole VLESS / VMess outbound chain for a config — the one place the engine, the delay tester and the UDP
+        /// sessions build it: XHTTP (stream-one over HTTP/2 + REALITY, else packet-up over TLS), or the security layer
+        /// (REALITY / TLS / none) with optional WebSocket or tcp http-header camouflage. VMess only ever reaches the
+        /// tcp / ws + TLS-or-none part (the link parser tags REALITY / Vision / XHTTP VMess as unsupported).
         /// </summary>
         /// <param name="pooled">XHTTP stream-one: share h2 connections (XMUX). False for a private connection (delay test).</param>
         public static ITransport CreateVlessOutbound(VlessConfig c, bool pooled, Action<string> log = null)
         {
             string net = (c.Network ?? "").Trim().ToLowerInvariant();
-            string hostHeader = !string.IsNullOrEmpty(c.WsHost) ? c.WsHost : SniOrHost(c);
+            string hostHeader = HostHeaderFor(c);
             if (net == "xhttp" || net == "splithttp")
             {
                 if (c.Reality != null)
@@ -62,6 +63,19 @@ namespace CS_Ray.Core.Transport
             if (net == "ws") return new WebSocketTransport(o, c.WsPath, hostHeader);
             if (string.Equals(c.HeaderType, "http", StringComparison.OrdinalIgnoreCase)) return new HttpHeaderTransport(o, c.WsHost, c.WsPath);
             return o;
+        }
+
+        /// <summary>The ws / xhttp Host header (Xray websocket/dialer.go): the configured host, else the TLS server name when
+        /// TLS is on, else the server address (an IPv6 literal bracketed, never a port). A leftover SNI on a security=none
+        /// profile is not used.</summary>
+        public static string HostHeaderFor(VlessConfig c)
+        {
+            if (!string.IsNullOrEmpty(c.WsHost)) return c.WsHost;
+            string net = (c.Network ?? "").Trim().ToLowerInvariant();
+            bool tls = c.UseTls || c.Reality != null || net == "xhttp" || net == "splithttp";   // xhttp always runs over TLS
+            if (tls) return SniOrHost(c);
+            string h = c.ServerHost ?? "";
+            return h.IndexOf(':') >= 0 && !h.StartsWith("[") ? "[" + h + "]" : h;
         }
 
         /// <summary>The TLS server name for a config: its SNI, else the server HOSTNAME — never the dial address, which

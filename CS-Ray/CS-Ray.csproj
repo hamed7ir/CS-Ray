@@ -59,6 +59,7 @@
     <Compile Include="Core\Transport\TlsCertificateValidator.cs" />
     <Compile Include="Core\Transport\TlsTransportFactory.cs" />
     <Compile Include="Core\Transport\HttpHeaderTransport.cs" />
+    <Compile Include="Core\Transport\BrowserHeaders.cs" />
     <Compile Include="Core\Transport\WebSocketTransport.cs" />
     <Compile Include="Core\Transport\XhttpTransport.cs" />
     <Compile Include="Core\Transport\Tls13\Tls13Crypto.cs" />
@@ -101,6 +102,7 @@
     <Compile Include="Core\Config\ProfileStore.cs" />
     <Compile Include="Core\Config\Subscription.cs" />
     <Compile Include="Core\Config\SubscriptionFetcher.cs" />
+    <Compile Include="Core\Config\YamlFlow.cs" />
     <Compile Include="Core\Config\LinkParser.cs" />
     <Compile Include="Core\Config\LinkParserSelfTest.cs" />
     <Compile Include="UI\MainForm.cs">
