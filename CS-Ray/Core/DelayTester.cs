@@ -130,14 +130,7 @@ namespace CS_Ray.Core
                     bool ws = netName == "ws";
                     string hostHdr = !string.IsNullOrEmpty(cfg.WsHost) ? cfg.WsHost
                         : (!string.IsNullOrEmpty(cfg.Sni) ? cfg.Sni : cfg.ServerHost);
-                    ITransport o;
-                    if (xhttp) o = new XhttpTransport(TlsTransportFactory.SniOrHost(cfg), cfg.AllowInsecure, cfg.WsPath, hostHdr);
-                    else
-                    {
-                        o = TlsTransportFactory.CreateVlessSecurity(cfg); // REALITY / TLS / security=none → plain
-                        if (ws) o = new WebSocketTransport(o, cfg.WsPath, hostHdr);
-                        else if (HttpHeader(cfg)) o = new HttpHeaderTransport(o, cfg.WsHost, cfg.WsPath);
-                    }
+                    ITransport o = TlsTransportFactory.CreateVlessOutbound(cfg, pooled: false);   // private connection: measure a full dial
                     holder.Outbound = o;
                     await o.ConnectAsync(cfg.ServerHost, cfg.ServerPort, CancellationToken.None).ConfigureAwait(false);
                     r.ConnectMs = (int)sw.ElapsedMilliseconds;
@@ -265,7 +258,7 @@ namespace CS_Ray.Core
                 while (off < n)
                 {
                     int r = await _inner.ReadAsync(buf, off, n - off, ct).ConfigureAwait(false);
-                    if (r <= 0) throw new IOException("VLESS response header truncated.");
+                    if (r <= 0) throw new IOException(VlessProtocol.NoAnswerMessage);
                     off += r;
                 }
                 return buf;

@@ -110,6 +110,11 @@ namespace CS_Ray.Core.Config
 
             var type = NormalizeNetwork(Get(q, "type"));
             p.Network = type; // keep the real transport for display even when unsupported
+            if (type == "xhttp")
+            {
+                p.XhttpMode = Get(q, "mode");
+                p.XhttpExtra = Get(q, "extra");
+            }
             var security = (Get(q, "security") ?? "").ToLowerInvariant();
             var flow = Get(q, "flow");
             p.Flow = string.IsNullOrEmpty(flow) ? null : flow;
@@ -127,7 +132,7 @@ namespace CS_Ray.Core.Config
             if (string.IsNullOrEmpty(p.Sni) && !string.IsNullOrEmpty(p.WsHost)) p.Sni = FirstOfList(p.WsHost);
 
             string reason = UnsupportedReason(type, security, flow, allowXhttp: true, allowReality: true) // VLESS: xhttp (packet-up), REALITY (tcp)
-                         ?? RealityParamsReason(p) ?? HeaderComboReason(p) ?? EncryptionReason(Get(q, "encryption"));
+                         ?? RealityParamsReason(p) ?? HeaderComboReason(p) ?? XhttpModeReason(p) ?? EncryptionReason(Get(q, "encryption"));
             return reason != null ? Unsupported(p, reason) : ParseResult.Success(p);
         }
 
@@ -152,7 +157,8 @@ namespace CS_Ray.Core.Config
             {
                 if (!allowReality) return "REALITY (VMess) — unsupported (VLESS only)";
                 if (nflow != null && !vision) return "REALITY + XTLS flow '" + flow + "' — unsupported (only xtls-rprx-vision)";
-                if (type != "tcp") return "REALITY over '" + type + "' — not supported yet (tcp only)";
+                if (vision && type != "tcp") return "XTLS Vision over '" + type + "' — unsupported (tcp only)";
+                if (type != "tcp" && type != "xhttp") return "REALITY over '" + type + "' — unsupported (tcp or xhttp)";
                 return null;
             }
             if (nflow != null)
@@ -169,6 +175,19 @@ namespace CS_Ray.Core.Config
             }
             if (type != "tcp" && type != "ws") return "'" + type + "' transport — unsupported (only tcp/ws)";
             return null;
+        }
+
+        /// <summary>XHTTP modes we run: stream-one over REALITY (HTTP/2; also what "auto" means with REALITY), packet-up
+        /// over TLS (HTTP/1.1; what "auto" means without REALITY). downloadSettings (split up/down links) is not supported.</summary>
+        internal static string XhttpModeReason(ProxyProfile p)
+        {
+            if (!string.Equals(NormalizeNetwork(p.Network), "xhttp", StringComparison.Ordinal)) return null;
+            if ((p.XhttpExtra ?? "").IndexOf("downloadSettings", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "XHTTP with downloadSettings — unsupported";
+            string m = (p.XhttpMode ?? "").Trim().ToLowerInvariant();
+            bool auto = m.Length == 0 || m == "auto";
+            if (p.Reality) return auto || m == "stream-one" ? null : "XHTTP mode '" + m + "' over REALITY — unsupported (stream-one only)";
+            return auto || m == "packet-up" ? null : "XHTTP mode '" + m + "' over TLS — not supported yet (packet-up only)";
         }
 
         /// <summary>The engine speaks VMess over raw TCP only (optionally with the http header camouflage).</summary>
@@ -194,7 +213,7 @@ namespace CS_Ray.Core.Config
             string net = NormalizeNetwork(p.Network);
             string sec = p.Reality ? "reality" : p.UseTls ? "tls" : "none";
             if (p.Protocol == "vless")
-                return UnsupportedReason(net, sec, p.Flow, allowXhttp: true, allowReality: true) ?? RealityParamsReason(p) ?? HeaderComboReason(p);
+                return UnsupportedReason(net, sec, p.Flow, allowXhttp: true, allowReality: true) ?? RealityParamsReason(p) ?? HeaderComboReason(p) ?? XhttpModeReason(p);
             if (p.Protocol == "vmess")
                 return UnsupportedReason(net, sec, null, allowXhttp: false, allowReality: false) ?? VmessTransportReason(net, p.UseTls);
             return null;

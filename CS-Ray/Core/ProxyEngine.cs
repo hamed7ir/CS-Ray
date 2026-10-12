@@ -34,6 +34,7 @@ namespace CS_Ray.Core
         public Transport.Tls13.RealityConfig Reality; // security=reality (tcp only): replaces TLS — null otherwise
         public string Flow;            // VLESS flow: null or "xtls-rprx-vision" (tcp + tls/reality only)
         public string Fingerprint;     // uTLS fp for our own TLS 1.3 client (REALITY carries its own; used by tls+Vision)
+        public string XhttpExtra;      // XHTTP share-link "extra" JSON (padding range, noGRPCHeader, headers, xmux)
 
         /// <summary>VLESS with XTLS Vision.</summary>
         public bool IsVision => Flow == CS_Ray.Core.Protocol.VlessProtocol.FlowVision;
@@ -128,7 +129,7 @@ namespace CS_Ray.Core
                             (string.IsNullOrEmpty(_config.ProxyUser) ? "" : " (auth)") +
                             " — TCP-carry only (DNS via engine; non-DNS UDP → TCP fallback).");
             else if (_config.Reality != null)
-                Log?.Invoke("Outbound: VLESS" + (_config.IsVision ? " + XTLS Vision" : "") + " over REALITY to " + _config.ServerHost + ":" + _config.ServerPort +
+                Log?.Invoke("Outbound: VLESS" + (_config.IsVision ? " + XTLS Vision" : "") + (IsXhttp ? " over XHTTP stream-one (HTTP/2)" : "") + " over REALITY to " + _config.ServerHost + ":" + _config.ServerPort +
                             " (SNI=" + _config.Reality.ServerName + ", fp=" + (string.IsNullOrEmpty(_config.Reality.Fingerprint) ? "chrome" : _config.Reality.Fingerprint) +
                             " → " + Transport.Tls13.ClientHelloBuilder.ProfileFor(_config.Reality.Fingerprint) + " hello)");
             else if (_config.IsVision)
@@ -150,6 +151,7 @@ namespace CS_Ray.Core
             try { _cts?.Cancel(); } catch { }
             try { _inbound?.Stop(); } catch { }
             _inbound = null;
+            try { Transport.Http2.XhttpPool.CloseAll(); } catch { }   // pooled XHTTP h2 connections
             Log?.Invoke("Engine stopped.");
         }
 
@@ -197,16 +199,7 @@ namespace CS_Ray.Core
 
             // Outbound chain: XHTTP manages its own TLS (two connections), so it is NOT wrapped over a shared
             // TlsTransport; tcp/ws use TCP→TLS (security=tls) or plain TCP (security=none), +WebSocket when network=ws.
-            ITransport outbound;
-            if (IsXhttp)
-                outbound = new XhttpTransport(TlsTransportFactory.SniOrHost(_config), _config.AllowInsecure, _config.WsPath, WsHostHeader, Verbose ? Log : null);
-            else
-            {
-                outbound = TlsTransportFactory.CreateVlessSecurity(_config);
-                if (IsHttpHeader) outbound = new HttpHeaderTransport(outbound, _config.WsHost, _config.WsPath);
-                if (IsWebSocket)
-                    outbound = new WebSocketTransport(outbound, _config.WsPath, WsHostHeader);
-            }
+            ITransport outbound = TlsTransportFactory.CreateVlessOutbound(_config, pooled: true, log: Verbose ? Log : null);
 
             try
             {
@@ -232,7 +225,8 @@ namespace CS_Ray.Core
                             try { conn.Client.Close(); } catch { }
                         },
                         ct: ct,
-                        onError: s => Log?.Invoke("VLESS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s)).ConfigureAwait(false);
+                        onError: s => Log?.Invoke("VLESS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s),
+                    clientSocket: conn.Client.Client).ConfigureAwait(false);
                     return;
                 }
 
@@ -250,7 +244,8 @@ namespace CS_Ray.Core
                     },
                     ct: ct,
                     serverPreamble: c => VlessProtocol.ConsumeResponseHeaderAsync(server, c),
-                    onError: s => Log?.Invoke("VLESS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s)).ConfigureAwait(false);
+                    onError: s => Log?.Invoke("VLESS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s),
+                    clientSocket: conn.Client.Client).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -282,7 +277,9 @@ namespace CS_Ray.Core
                         outbound.Close();
                         try { conn.Client.Close(); } catch { }
                     },
-                    ct: ct).ConfigureAwait(false);
+                    ct: ct,
+                    onError: s => Log?.Invoke("Shadowsocks relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s),
+                    clientSocket: conn.Client.Client).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -303,7 +300,9 @@ namespace CS_Ray.Core
                 var server = outbound.GetStream();
                 await SocksClient.HandshakeAsync(server, conn.TargetHost, conn.TargetPort, _config.ProxyUser, _config.ProxyPass, ct).ConfigureAwait(false);
                 await StreamRelay.RelayAsync(conn.Stream, server,
-                    onClose: () => { outbound.Close(); try { conn.Client.Close(); } catch { } }, ct: ct).ConfigureAwait(false);
+                    onClose: () => { outbound.Close(); try { conn.Client.Close(); } catch { } }, ct: ct,
+                    onError: s => Log?.Invoke("SOCKS relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s),
+                    clientSocket: conn.Client.Client).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -327,7 +326,9 @@ namespace CS_Ray.Core
                 var server = outbound.GetStream();
                 await HttpConnectClient.ConnectAsync(server, conn.TargetHost, conn.TargetPort, _config.ProxyUser, _config.ProxyPass, ct).ConfigureAwait(false);
                 await StreamRelay.RelayAsync(conn.Stream, server,
-                    onClose: () => { outbound.Close(); try { conn.Client.Close(); } catch { } }, ct: ct).ConfigureAwait(false);
+                    onClose: () => { outbound.Close(); try { conn.Client.Close(); } catch { } }, ct: ct,
+                    onError: s => Log?.Invoke("HTTP proxy relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s),
+                    clientSocket: conn.Client.Client).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -364,7 +365,8 @@ namespace CS_Ray.Core
                         try { conn.Client.Close(); } catch { }
                     },
                     ct: ct,
-                    onError: s => Log?.Invoke("VMess relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s)).ConfigureAwait(false);
+                    onError: s => Log?.Invoke("VMess relay [" + conn.TargetHost + ":" + conn.TargetPort + "] " + s),
+                    clientSocket: conn.Client.Client).ConfigureAwait(false);
             }
             catch (Exception ex)
             {

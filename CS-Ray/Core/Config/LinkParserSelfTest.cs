@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text;
 
 namespace CS_Ray.Core.Config
@@ -96,8 +97,8 @@ namespace CS_Ray.Core.Config
                     LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&flow=xtls-rprx-direct&pbk=" + pbk), "only xtls-rprx-vision");
                 Unsupported(Check, "tag VLESS reality + http header",
                     LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&headerType=http&security=reality&pbk=" + pbk), "http header");
-                Unsupported(Check, "tag VLESS reality over xhttp",
-                    LinkParser.Parse("vless://u@1.2.3.4:443?type=xhttp&security=reality&pbk=" + pbk), "xhttp");
+                Supported(Check, "VLESS reality over xhttp (mode auto = stream-one) SUPPORTED",
+                    LinkParser.Parse("vless://u@1.2.3.4:443?type=xhttp&security=reality&pbk=" + pbk), x => x.Network == "xhttp" && x.Reality);
                 Unsupported(Check, "tag VLESS reality bad sid",
                     LinkParser.Parse("vless://u@1.2.3.4:443?type=tcp&security=reality&sid=xyz&pbk=" + pbk), "short id");
             }
@@ -122,6 +123,33 @@ namespace CS_Ray.Core.Config
                 LinkParser.Parse("vmess://" + B64("{\"add\":\"1.2.3.4\",\"port\":\"80\",\"id\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"aid\":\"0\",\"net\":\"ws\"}")), "raw TCP only");
             Unsupported(Check, "tag VMESS tls (engine is raw TCP)",
                 LinkParser.Parse("vmess://" + B64("{\"add\":\"1.2.3.4\",\"port\":\"443\",\"id\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"aid\":\"0\",\"net\":\"tcp\",\"tls\":\"tls\"}")), "raw TCP only");
+            {
+                // XHTTP: stream-one over REALITY (HTTP/2) is supported; other modes get precise reasons.
+                const string k = "q0ZjwXLc5OCk4V6-cLx3eKZYbcY3wbRW0V5yRS5pXGw";
+                string xr = "vless://5d8a2b98-8129-4e5c-bc48-3f75e148d1a6@1.2.3.4:443?security=reality&type=xhttp&sni=a.com&fp=chrome&pbk=" + k
+                          + "&host=a.com&path=%2F%E6%98%9F%E4%BA%91%2Fx%2F&extra=%7B%22noGRPCHeader%22%3Atrue%2C%22xPaddingBytes%22%3A%22200-300%22%7D";
+                Supported(Check, "VLESS reality + xhttp stream-one SUPPORTED", LinkParser.Parse(xr + "&mode=stream-one#X"),
+                    x => x.XhttpMode == "stream-one" && x.XhttpExtra.Contains("noGRPCHeader") && x.ToEngineConfig().XhttpExtra == x.XhttpExtra);
+                Supported(Check, "VLESS reality + xhttp auto SUPPORTED", LinkParser.Parse(xr + "&mode=auto#X"), x => true);
+                Unsupported(Check, "tag reality + xhttp packet-up", LinkParser.Parse(xr + "&mode=packet-up#X"), "stream-one only");
+                Unsupported(Check, "tag tls + xhttp stream-one", LinkParser.Parse("vless://u@1.2.3.4:443?security=tls&type=xhttp&mode=stream-one"), "packet-up only");
+                Supported(Check, "VLESS tls + xhttp packet-up still SUPPORTED", LinkParser.Parse("vless://u@1.2.3.4:443?security=tls&type=xhttp&mode=packet-up"), x => true);
+                Unsupported(Check, "tag xhttp downloadSettings", LinkParser.Parse(xr + "&mode=auto&extra=%7B%22downloadSettings%22%3A%7B%7D%7D"), "downloadSettings");
+                Unsupported(Check, "tag vision over reality xhttp", LinkParser.Parse(xr + "&mode=stream-one&flow=xtls-rprx-vision"), "tcp only");
+
+                // Request shape: Go-escaped path with trailing slash, Referer x_padding in range, no content-type.
+                var xs = CS_Ray.Core.Transport.Http2.XhttpSettings.From("a.com", "/\u661f\u4e91/x", "{\"noGRPCHeader\":true,\"xPaddingBytes\":\"200-300\"}");
+                var hs = xs.RequestHeaders();
+                string path = hs.First(h => h.Name == ":path").Value, referer = hs.First(h => h.Name == "referer").Value;
+                int pad = referer.Length - referer.IndexOf("x_padding=", StringComparison.Ordinal) - "x_padding=".Length;
+                Check("XHTTP path escaped Go-style + trailing slash + dual padding", path.StartsWith("/%E6%98%9F%E4%BA%91/x/?x_padding=", StringComparison.Ordinal)
+                      && path.Substring(path.IndexOf('=') + 1) == referer.Substring(referer.IndexOf("x_padding=", StringComparison.Ordinal) + 10), path.Substring(0, 40));
+                Check("XHTTP x_padding in 200..299, no content-type", pad >= 200 && pad < 300 && !hs.Any(h => h.Name == "content-type")
+                      && referer.StartsWith("https://a.com/%E6%98%9F", StringComparison.Ordinal), "pad " + pad);
+                var xs2 = CS_Ray.Core.Transport.Http2.XhttpSettings.From("a.com", "/p", "{\"xmux\":{\"maxConcurrency\":\"16-32\"}}");
+                Check("XHTTP xmux overrides defaults", xs2.ConnTo == 0 && xs2.ConcFrom == 16 && xs2.ConcTo == 32 && xs2.ReqTo == 0, "conc " + xs2.ConcFrom + "-" + xs2.ConcTo);
+                Check("XHTTP default grpc content-type", CS_Ray.Core.Transport.Http2.XhttpSettings.From("a.com", "/p", null).RequestHeaders().Any(h => h.Name == "content-type" && h.Value == "application/grpc"), "");
+            }
             {
                 // An edit that supplies the missing REALITY key re-classifies the profile as runnable.
                 var old = LinkParser.Parse("vless://5d8a2b98-8129-4e5c-bc48-3f75e148d1a6@1.2.3.4:443?type=tcp&security=reality&sni=a.com").Profile;

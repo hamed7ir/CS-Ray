@@ -34,6 +34,10 @@ namespace CS_Ray.Core.Protocol
         /// that still sends this on the wire.</summary>
         public const string FlowVision = "xtls-rprx-vision";
 
+        /// <summary>What it means when a VLESS server closes before its response header: it accepted the request but
+        /// couldn't (or wouldn't) connect to the target — e.g. that site blocks the exit, or the server's routing refuses it.</summary>
+        public const string NoAnswerMessage = "the server closed the connection without answering (it could not reach the target, or refused it)";
+
         /// <summary>Normalizes a share-link / config flow: Vision (incl. its -udp443 alias) → <see cref="FlowVision"/>,
         /// empty/"none" → null, anything else unchanged (and unsupported).</summary>
         public static string NormalizeFlow(string flow)
@@ -117,7 +121,15 @@ namespace CS_Ray.Core.Protocol
         /// </summary>
         public static async Task ConsumeResponseHeaderAsync(Stream server, CancellationToken ct)
         {
-            var head = await ReadExactAsync(server, 2, ct).ConfigureAwait(false); // version + addonLen
+            // Only OUR EOF check means "no answer": a transport's own exception (e.g. an XHTTP downlink failure) passes
+            // through unchanged.
+            var head = new byte[2];
+            for (int got = 0; got < 2;)
+            {
+                int r = await server.ReadAsync(head, got, 2 - got, ct).ConfigureAwait(false);   // version + addonLen
+                if (r <= 0) throw new IOException(got == 0 ? NoAnswerMessage : "VLESS response header truncated");
+                got += r;
+            }
             int addonLen = head[1];
             if (addonLen > 0)
                 await ReadExactAsync(server, addonLen, ct).ConfigureAwait(false);

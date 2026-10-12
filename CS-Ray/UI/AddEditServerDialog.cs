@@ -54,6 +54,7 @@ namespace CS_Ray.UI
         private readonly bool _unsupported;  // editing a recognized-but-unsupported server → show a read-only note
         private readonly string _noteText;
         private readonly string _keepSpiderX;   // not editable here — carried over so an edit doesn't drop it
+        private readonly string _keepXhttpMode, _keepXhttpExtra;
 
         /// <summary>The profile produced on OK (null on Cancel).</summary>
         public ProxyProfile Result { get; private set; }
@@ -65,6 +66,8 @@ namespace CS_Ray.UI
             _unsupported = existing != null && existing.Unsupported;
             _noteText = existing?.UnsupportedReason;
             _keepSpiderX = existing?.SpiderX;
+            _keepXhttpMode = existing?.XhttpMode;
+            _keepXhttpExtra = existing?.XhttpExtra;
 
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); } };
@@ -137,7 +140,7 @@ namespace CS_Ray.UI
             bool wsOrXhttp = ws || xhttp;
             bool tcp = vlessLike && Net == "tcp";
             bool tcpHttp = tcp && Hdr == "http";          // tcp http-header camouflage uses Host / Path too
-            bool reality = vless && tcp && !tcpHttp && Sec == "reality";   // REALITY: VLESS over plain tcp only
+            bool reality = vless && ((tcp && !tcpHttp) || xhttp) && Sec == "reality";   // REALITY: VLESS over plain tcp or xhttp
             bool flowable = vless && tcp && !tcpHttp && Sec != "none";      // XTLS Vision: tcp + tls/reality
             bool vision = flowable && FlowSel != "none";
 
@@ -161,7 +164,7 @@ namespace CS_Ray.UI
             Place(_cboHeader, ref y, tcp);
             Place(_txtWsHost, ref y, wsOrXhttp || tcpHttp);
             Place(_txtWsPath, ref y, wsOrXhttp || tcpHttp);
-            Place(_cboSecurity, ref y, vlessLike && !xhttp);   // xhttp implies TLS — no choice to make
+            Place(_cboSecurity, ref y, vlessLike);              // (xhttp: tls or reality — "none" counts as tls)
             Place(_txtSni, ref y, vlessLike || https);         // vless TLS/REALITY/xhttp + https-proxy TLS
             Place(_txtPbk, ref y, reality);
             Place(_txtSid, ref y, reality);
@@ -259,7 +262,7 @@ namespace CS_Ray.UI
                 prof.Network = Net;
                 prof.Sni = (_txtSni.Text ?? "").Trim();
                 prof.AllowInsecure = _swInsecure.Checked;
-                string sec = Net == "xhttp" ? "tls" : Sec;      // xhttp implies TLS
+                string sec = Net == "xhttp" && Sec == "none" ? "tls" : Sec;   // xhttp needs TLS or REALITY
                 prof.UseTls = sec != "none";
                 if (proto == "vmess" && (Net != "tcp" || sec != "none"))
                     return "VMess is supported over raw tcp only (security none, optional http header).";
@@ -274,7 +277,7 @@ namespace CS_Ray.UI
                 if (sec == "reality")
                 {
                     if (proto != "vless") return "REALITY is supported for VLESS only.";
-                    if (Net != "tcp" || Hdr == "http") return "REALITY works over plain tcp only (no ws / xhttp / http header).";
+                    if (!((Net == "tcp" && Hdr != "http") || Net == "xhttp")) return "REALITY works over plain tcp or xhttp only (no ws / http header).";
                     string pbk = (_txtPbk.Text ?? "").Trim(), sid = (_txtSid.Text ?? "").Trim();
                     if (Core.Transport.Tls13.RealityConfig.ParsePublicKey(pbk) == null)
                         return "Public key must be the server's X25519 key (43-character base64url, as in pbk=).";
@@ -292,6 +295,7 @@ namespace CS_Ray.UI
                 {
                     prof.WsPath = string.IsNullOrEmpty(_txtWsPath.Text) ? "/" : _txtWsPath.Text.Trim();
                     prof.WsHost = (_txtWsHost.Text ?? "").Trim();
+                    if (Net == "xhttp") { prof.XhttpMode = _keepXhttpMode; prof.XhttpExtra = _keepXhttpExtra; }
                 }
             }
 

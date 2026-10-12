@@ -523,7 +523,7 @@ namespace CS_Ray.Core.Protocol
             while (got < n)
             {
                 int r = await _outer.ReadAsync(b, got, n - got, ct).ConfigureAwait(false);
-                if (r <= 0) throw new IOException("VLESS: connection closed before the response header");
+                if (r <= 0) throw new IOException(VlessProtocol.NoAnswerMessage);
                 got += r;
             }
         }

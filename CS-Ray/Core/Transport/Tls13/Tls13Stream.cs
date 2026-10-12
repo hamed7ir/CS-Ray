@@ -73,6 +73,11 @@ namespace CS_Ray.Core.Transport.Tls13
         private int _disposed;
 
         public string NegotiatedAlpn { get; private set; }
+
+        // ALPS (application-layer protocol settings, the Chrome extension we offer with h2): when the server accepts it in
+        // EncryptedExtensions, BoringSSL expects the client's own settings in a client EncryptedExtensions message before
+        // its Finished — without it the server aborts with unexpected_message. 0 = not negotiated.
+        private int _alpsCodepoint;
         public ushort CipherSuite => _suite != null ? _suite.Id : (ushort)0;
 
         public Tls13Stream(Stream net, Tls13ClientOptions options) { _net = net; _opt = options; }
@@ -197,18 +202,28 @@ namespace CS_Ray.Core.Transport.Tls13
             byte[] cAp = Tls13Kdf.DeriveSecret(s, master, "c ap traffic", thServerFin);
             byte[] sAp = Tls13Kdf.DeriveSecret(s, master, "s ap traffic", thServerFin);
 
-            // Client: ChangeCipherSpec (middlebox compat — we sent a session id) + Finished under the handshake keys
+            // Client flight under the handshake keys: ChangeCipherSpec (middlebox compat — we sent a session id), then the
+            // client EncryptedExtensions if ALPS was negotiated (our settings: empty), then Finished over the transcript so far.
+            var flight = new MemoryStream();
+            flight.Write(new byte[] { 0x14, 0x03, 0x03, 0x00, 0x01, 0x01 }, 0, 6);
+            byte[] thClientFin = thServerFin;
+            if (_alpsCodepoint != 0)
+            {
+                var ee = new byte[] { 8, 0, 0, 6, 0, 4, (byte)(_alpsCodepoint >> 8), (byte)_alpsCodepoint, 0, 0 };
+                transcript.Write(ee, 0, ee.Length);
+                thClientFin = Tls13Kdf.Hash(s, transcript.ToArray());
+                var eeRecord = clientHsKeys.Seal(0x16, ee, 0, ee.Length);
+                flight.Write(eeRecord, 0, eeRecord.Length);
+            }
             byte[] cfk = Tls13Kdf.ExpandLabel(s, cHs, "finished", null, s.HashLen);
-            byte[] verify = Tls13Kdf.Hmac(s, cfk, thServerFin);
+            byte[] verify = Tls13Kdf.Hmac(s, cfk, thClientFin);
             var fin = new byte[4 + verify.Length];
             fin[0] = 20; fin[3] = (byte)verify.Length;
             Buffer.BlockCopy(verify, 0, fin, 4, verify.Length);
-            var ccs = new byte[] { 0x14, 0x03, 0x03, 0x00, 0x01, 0x01 };
             var finRecord = clientHsKeys.Seal(0x16, fin, 0, fin.Length);
-            var flight = new byte[ccs.Length + finRecord.Length];
-            Buffer.BlockCopy(ccs, 0, flight, 0, ccs.Length);
-            Buffer.BlockCopy(finRecord, 0, flight, ccs.Length, finRecord.Length);
-            await _net.WriteAsync(flight, 0, flight.Length, ct).ConfigureAwait(false);
+            flight.Write(finRecord, 0, finRecord.Length);
+            var flightBytes = flight.ToArray();
+            await _net.WriteAsync(flightBytes, 0, flightBytes.Length, ct).ConfigureAwait(false);
 
             _readKeys = new Tls13RecordKeys(s, sAp);
             _writeKeys = new Tls13RecordKeys(s, cAp);
@@ -277,6 +292,7 @@ namespace CS_Ray.Core.Transport.Tls13
             {
                 int type = r.U16(), len = r.U16(), e = r.Pos + len;
                 if (type == 0x0010 && len >= 3) { r.U16(); int n = r.U8(); NegotiatedAlpn = Encoding.ASCII.GetString(r.Bytes(n)); }
+                else if (type == 0x44cd || type == 0x4469) _alpsCodepoint = type;
                 r.Pos = e;
             }
         }

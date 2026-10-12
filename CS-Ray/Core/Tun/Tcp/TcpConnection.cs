@@ -134,8 +134,11 @@ namespace CS_Ray.Core.Tun.Tcp
             if ((s.Flags & TcpSegment.FIN) != 0 && inOrder)
             {
                 lock (_lock) _ourAck += 1;
-                _clientFinSeen = true;
-                lock (_sendLock) { try { if (_outConnected) _out.Shutdown(SocketShutdown.Send); } catch { } }
+                lock (_sendLock)
+                {
+                    _clientFinSeen = true;   // replayed by StartOutbound if the engine connection isn't up yet
+                    try { if (_outConnected) _out.Shutdown(SocketShutdown.Send); } catch { }
+                }
                 needAck = true;
             }
 
@@ -175,9 +178,15 @@ namespace CS_Ray.Core.Tun.Tcp
                     var rep = RecvExact(10);
                     if (rep == null || rep[1] != 0x00) throw new Exception("SOCKS connect rep=" + (rep != null ? rep[1] : 255));
 
-                    List<byte[]> pend;
-                    lock (_lock) { _outConnected = true; pend = _pending; _pending = new List<byte[]>(); }
-                    lock (_sendLock) { foreach (var d in pend) _out.Send(d); }
+                    // Flip to connected, flush what queued up, and replay an early FIN — all under the send lock, so a
+                    // segment processed meanwhile can neither overtake the queued data nor be lost.
+                    lock (_sendLock)
+                    {
+                        List<byte[]> pend;
+                        lock (_lock) { _outConnected = true; pend = _pending; _pending = new List<byte[]>(); }
+                        foreach (var d in pend) _out.Send(d);
+                        if (_clientFinSeen) _out.Shutdown(SocketShutdown.Send);
+                    }
                     _log?.Invoke("TUN TCP: " + Ip(_srvIp) + ":" + _srvPort + " established via engine.");
 
                     new Thread(ReadPump) { IsBackground = true, Name = "TcpOut" }.Start();
@@ -232,8 +241,11 @@ namespace CS_Ray.Core.Tun.Tcp
 
         private void SendToOutbound(byte[] data)
         {
-            lock (_lock) { if (!_outConnected) { _pending.Add(data); return; } }
-            lock (_sendLock) { try { _out.Send(data); } catch { Reset(); } }
+            lock (_sendLock)
+            {
+                lock (_lock) { if (!_outConnected) { _pending.Add(data); return; } }
+                try { _out.Send(data); } catch { Reset(); }
+            }
         }
 
         private void SendCtl(byte flags)
@@ -266,7 +278,7 @@ namespace CS_Ray.Core.Tun.Tcp
 
         private void MaybeClose()
         {
-            if (_clientFinSeen && _ourFinSent && _ourFinAcked) Close();
+            if (_clientFinSeen && _ourFinSent && _ourFinAcked && MarkClosed()) Finish(false);
         }
 
         private void Reset()
@@ -274,12 +286,14 @@ namespace CS_Ray.Core.Tun.Tcp
             if (!MarkClosed()) return;
             uint seq, ack; lock (_lock) { seq = _ourSeq; ack = _ourAck; }
             try { _writeTun(TcpSegment.Build(_srvIp, _srvPort, _appIp, _appPort, seq, ack, TcpSegment.RST, 0, null, 0, 0)); } catch { }
-            Finish();
+            Finish(true);
         }
 
+        /// <summary>Abortive close (app RST, idle expiry, stack stop): the engine sees a reset, so its relay tears down
+        /// at once instead of treating it as a graceful "app finished sending".</summary>
         public void Close()
         {
-            if (MarkClosed()) Finish();
+            if (MarkClosed()) Finish(true);
         }
 
         private bool MarkClosed()
@@ -288,9 +302,10 @@ namespace CS_Ray.Core.Tun.Tcp
             return true;
         }
 
-        private void Finish()
+        private void Finish(bool abort)
         {
             try { _retransTimer?.Dispose(); } catch { }
+            if (abort) { try { if (_out != null) _out.LingerState = new LingerOption(true, 0); } catch { } }
             try { _out?.Close(); } catch { }
             _onClosed?.Invoke();
         }

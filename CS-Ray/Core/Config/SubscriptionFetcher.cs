@@ -246,9 +246,11 @@ namespace CS_Ray.Core.Config
         }
 
         // Transport (network) → unsupported reason for the managed engine (null = supported tcp/ws).
-        // VLESS + REALITY: same rules as share links (tcp only, flow none or Vision, valid pbk/sid).
+        // VLESS + REALITY: same rules as share links (flow none or Vision, valid pbk/sid). XHTTP from Clash/sing-box isn't
+        // mapped (mode/extra/path), so it stays unsupported here — the share link of the same server works.
         private static string RealityReason(ProxyProfile p, string rawNet, string flow)
-            => LinkParser.UnsupportedReason(NetType(rawNet), "reality", flow, allowXhttp: true, allowReality: true) ?? LinkParser.RealityParamsReason(p);
+            => (NetType(rawNet) == "xhttp" ? "XHTTP from a Clash/sing-box subscription \u2014 not supported yet (use the vless:// link)" : null)
+               ?? LinkParser.UnsupportedReason(NetType(rawNet), "reality", flow, allowXhttp: true, allowReality: true) ?? LinkParser.RealityParamsReason(p);
 
         // VLESS + a flow without REALITY: XTLS Vision over tls+tcp is supported, anything else isn't.
         private static string VisionReason(ProxyProfile p, string rawNet, string flow)

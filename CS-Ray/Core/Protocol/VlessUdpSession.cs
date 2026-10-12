@@ -40,11 +40,7 @@ namespace CS_Ray.Core.Protocol
         /// <summary>Dial the server and send the VLESS UDP request header for the given destination.</summary>
         public async Task ConnectAsync(string dstHost, int dstPort, CancellationToken ct)
         {
-            ITransport outbound = TlsTransportFactory.CreateVlessSecurity(_cfg); // REALITY / TLS / security=none → plain
-            if (IsWebSocket)
-                outbound = new WebSocketTransport(outbound, _cfg.WsPath, WsHostHeader);
-            else if (string.Equals(_cfg.HeaderType, "http", StringComparison.OrdinalIgnoreCase))
-                outbound = new HttpHeaderTransport(outbound, _cfg.WsHost, _cfg.WsPath);
+            ITransport outbound = TlsTransportFactory.CreateVlessOutbound(_cfg, pooled: true);   // same chain as TCP (incl. XHTTP)
 
             // Dial the pinned IP when set (full tunnel), else the hostname. SNI/WS-Host stay the hostname.
             string dial = !string.IsNullOrEmpty(_cfg.ServerIp) ? _cfg.ServerIp : _cfg.ServerHost;

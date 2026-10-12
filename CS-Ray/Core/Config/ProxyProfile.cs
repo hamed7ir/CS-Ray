@@ -46,6 +46,10 @@ namespace CS_Ray.Core.Config
         /// verbatim but leave the profile unsupported.</summary>
         public string Flow;
 
+        /// <summary>XHTTP share-link mode (stream-one / packet-up / auto / stream-up) and raw "extra" JSON.</summary>
+        public string XhttpMode;
+        public string XhttpExtra;
+
         public string SsMethod;
         public string VmessSecurity = "auto";
 
@@ -81,6 +85,7 @@ namespace CS_Ray.Core.Config
                     c.UseTls = UseTls;   // security=tls vs none (was never passed → every VLESS server was dialed with TLS)
                     c.HeaderType = TcpHeader();
                     c.Flow = CS_Ray.Core.Protocol.VlessProtocol.NormalizeFlow(Flow);
+                    c.XhttpExtra = XhttpExtra;
                     c.Fingerprint = Fingerprint;
                     if (Reality)
                         c.Reality = new Transport.Tls13.RealityConfig

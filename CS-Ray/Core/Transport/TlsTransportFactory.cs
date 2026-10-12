@@ -1,3 +1,5 @@
+using System;
+
 namespace CS_Ray.Core.Transport
 {
     /// <summary>Which TLS implementation outbound "security=tls" connections use.</summary>
@@ -33,6 +35,34 @@ namespace CS_Ray.Core.Transport
              : c.UseTls && c.IsVision ? new Tls13.Tls13Transport(SniOrHost(c), c.Fingerprint, null, c.AllowInsecure)
              : c.UseTls ? Create(SniOrHost(c), c.AllowInsecure)
              : (ITransport)new TcpTransport();
+
+        /// <summary>
+        /// The whole VLESS outbound chain for a config — the one place the engine, the delay tester and VLESS UDP sessions
+        /// build it: XHTTP (stream-one over HTTP/2 + REALITY, else packet-up over TLS), or the security layer (REALITY /
+        /// TLS / none) with optional WebSocket or tcp http-header camouflage.
+        /// </summary>
+        /// <param name="pooled">XHTTP stream-one: share h2 connections (XMUX). False for a private connection (delay test).</param>
+        public static ITransport CreateVlessOutbound(VlessConfig c, bool pooled, Action<string> log = null)
+        {
+            string net = (c.Network ?? "").Trim().ToLowerInvariant();
+            string hostHeader = !string.IsNullOrEmpty(c.WsHost) ? c.WsHost : SniOrHost(c);
+            if (net == "xhttp" || net == "splithttp")
+            {
+                if (c.Reality != null)
+                {
+                    var rc = c.Reality;
+                    string key = "xhttp|" + Convert.ToBase64String(rc.PublicKey ?? new byte[0]) + "|" + BitConverter.ToString(rc.ShortId ?? new byte[0])
+                               + "|" + rc.ServerName + "|" + rc.Fingerprint;
+                    return new Http2.XhttpStreamOneTransport(Http2.XhttpSettings.From(hostHeader, c.WsPath, c.XhttpExtra),
+                                                             () => new Tls13.Tls13Transport(rc), key, pooled);
+                }
+                return new XhttpTransport(SniOrHost(c), c.AllowInsecure, c.WsPath, hostHeader, log);
+            }
+            ITransport o = CreateVlessSecurity(c);
+            if (net == "ws") return new WebSocketTransport(o, c.WsPath, hostHeader);
+            if (string.Equals(c.HeaderType, "http", StringComparison.OrdinalIgnoreCase)) return new HttpHeaderTransport(o, c.WsHost, c.WsPath);
+            return o;
+        }
 
         /// <summary>The TLS server name for a config: its SNI, else the server HOSTNAME — never the dial address, which
         /// is a pinned IP in full-tunnel mode (that would send no SNI and validate the certificate against an IP).</summary>

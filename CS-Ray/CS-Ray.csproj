@@ -65,6 +65,9 @@
     <Compile Include="Core\Transport\Tls13\ClientHelloBuilder.cs" />
     <Compile Include="Core\Transport\Tls13\Tls13Stream.cs" />
     <Compile Include="Core\Transport\Tls13\Tls13Transport.cs" />
+    <Compile Include="Core\Transport\Http2\Hpack.cs" />
+    <Compile Include="Core\Transport\Http2\Http2Connection.cs" />
+    <Compile Include="Core\Transport\Http2\XhttpStreamOne.cs" />
     <Compile Include="Core\Inbound\MixedInbound.cs" />
     <Compile Include="Core\Protocol\VlessProtocol.cs" />
     <Compile Include="Core\Protocol\VlessVision.cs" />

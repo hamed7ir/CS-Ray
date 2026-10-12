@@ -19,7 +19,10 @@ namespace CS_Ray.Core.Transport
             // register the token to close the socket, which faults the connect task.
             using (ct.Register(() => { try { _client.Close(); } catch { } }))
             {
-                await _client.ConnectAsync(host, port).ConfigureAwait(false);
+                // Closing a TcpClient mid-connect makes .NET Framework's EndConnect throw NullReference/ObjectDisposed:
+                // report that as the cancellation (timeout) it is.
+                try { await _client.ConnectAsync(host, port).ConfigureAwait(false); }
+                catch (Exception) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }
             }
             ct.ThrowIfCancellationRequested();
             _stream = _client.GetStream();
