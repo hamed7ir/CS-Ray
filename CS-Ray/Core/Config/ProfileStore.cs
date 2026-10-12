@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Web.Script.Serialization;
 
 namespace CS_Ray.Core.Config
@@ -198,19 +199,20 @@ namespace CS_Ray.Core.Config
             catch { /* read-only dir etc. — non-fatal */ }
         }
 
-        /// <summary>
-        /// Adds a profile, or — if one with the same endpoint (protocol+server+port+credential)
-        /// already exists — updates it in place (keeping its Id). Returns the stored profile.
-        /// </summary>
-        public ProxyProfile AddOrUpdate(ProxyProfile p)
+        /// <summary>Adds the profile, or replaces the one in the same group that is the SAME server (see
+        /// <see cref="SameEndpoint"/>) — keeping its Id, so an active selection survives. Returns the stored profile;
+        /// <paramref name="replaced"/> tells which happened.</summary>
+        public ProxyProfile AddOrUpdate(ProxyProfile p, out bool replaced)
         {
             if (string.IsNullOrEmpty(p.Group)) p.Group = ManualGroup;
             // Dedup only WITHIN the same group — a Manual server and a sub server may share an endpoint.
             var existing = Profiles.FirstOrDefault(x =>
                 string.Equals(GroupOf(x), GroupOf(p), StringComparison.OrdinalIgnoreCase) && SameEndpoint(x, p));
+            replaced = existing != null;
             if (existing != null)
             {
                 p.Id = existing.Id;
+                if (string.IsNullOrEmpty(p.Name)) p.Name = existing.Name;   // a link without #name keeps the given one
                 Profiles[Profiles.IndexOf(existing)] = p;
             }
             else
@@ -275,11 +277,81 @@ namespace CS_Ray.Core.Config
 
         public ProxyProfile GetById(string id) => Profiles.FirstOrDefault(x => x.Id == id);
 
-        private static bool SameEndpoint(ProxyProfile a, ProxyProfile b)
-            => string.Equals(a.Protocol, b.Protocol, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(a.Server, b.Server, StringComparison.OrdinalIgnoreCase)
-            && a.Port == b.Port
-            && string.Equals(a.Uuid ?? "", b.Uuid ?? "", StringComparison.Ordinal)
-            && string.Equals(a.Password ?? "", b.Password ?? "", StringComparison.Ordinal);
+        /// <summary>
+        /// Two profiles are the same server when everything that shapes the connection matches: protocol, address,
+        /// credentials, transport (network / path / host / header), security (TLS / REALITY key + short id / SNI), flow
+        /// and XHTTP mode/extra. Client-side preferences — name, fingerprint, allowInsecure, VMess cipher, proxy password,
+        /// spiderX — don't make a different server: re-adding with only those changed updates the entry in place.
+        /// </summary>
+        internal static bool SameEndpoint(ProxyProfile a, ProxyProfile b) => EndpointKey(a) == EndpointKey(b);
+
+        /// <summary>Normalised identity string for <see cref="SameEndpoint"/> (null/empty/defaults folded together).</summary>
+        internal static string EndpointKey(ProxyProfile p)
+        {
+            string proto = Norm(p.Protocol);
+            var k = new StringBuilder();
+            Action<string> add = v => k.Append(v ?? "").Append('\u001f');
+            add(proto);
+            add(Norm(p.Server).Trim('[', ']'));
+            add(p.Port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            switch (proto)
+            {
+                case "vless":
+                case "vmess":
+                    add(Norm(p.Uuid).Replace("-", ""));
+                    break;
+                case "shadowsocks":
+                    add(Norm(p.SsMethod)); add(p.Password ?? "");
+                    break;
+                case "socks":
+                case "http":
+                case "https":   // plain proxies: the account, not its password
+                    add(p.ProxyUser ?? "");
+                    break;
+                default:        // trojan / unsupported schemes: whatever credential was kept
+                    add(p.Uuid ?? ""); add(p.Password ?? "");
+                    break;
+            }
+            // A recognized-but-unsupported import (vmess aid>0, unsupported transport, ...) may differ only in a field we
+            // don't store — never let it overwrite a runnable entry (or vice versa).
+            add(p.Unsupported ? "unsupported:" + Norm(p.UnsupportedReason) : "");
+            if (proto == "vless" || proto == "vmess")
+            {
+                string net = Norm(p.Network);
+                if (net.Length == 0 || net == "raw") net = "tcp";
+                if (net == "splithttp") net = "xhttp";
+                add(net);
+                bool tcpHttp = net == "tcp" && Norm(p.HeaderType) == "http";
+                bool usesPathHost = net != "tcp" || tcpHttp;
+                add(usesPathHost ? (string.IsNullOrEmpty(p.WsPath) ? "/" : p.WsPath.Trim()) : "");
+                string sni = Norm(string.IsNullOrEmpty(p.Sni) ? p.Server : p.Sni);   // the engine's SniOrHost
+                // ws / xhttp send SniOrHost when host is empty; the tcp http header falls back to its own default hosts.
+                bool hostFallsBackToSni = net == "ws" || net == "xhttp";
+                add(!usesPathHost ? "" : hostFallsBackToSni && string.IsNullOrEmpty(p.WsHost) ? sni : Norm(p.WsHost));
+                add(tcpHttp ? "http" : "");
+                add(p.Reality ? "reality" : p.UseTls ? "tls" : "none");
+                add(p.Reality || p.UseTls ? sni : "");
+                if (p.Reality)
+                {
+                    var key = Transport.Tls13.RealityConfig.ParsePublicKey(p.RealityPublicKey);
+                    add(key != null ? Convert.ToBase64String(key) : (p.RealityPublicKey ?? "").Trim());   // base64 is case-sensitive
+                    add(Norm(p.RealityShortId));
+                }
+                add(Norm(Protocol.VlessProtocol.NormalizeFlow(p.Flow)));
+                if (net == "xhttp")
+                {
+                    // The mode only classifies support: runnable profiles use stream-one over REALITY and packet-up over
+                    // TLS, so auto and that effective mode are the same server. extra is read only by stream-one.
+                    string mode = Norm(p.XhttpMode);
+                    if (mode == "auto" || mode == (p.Reality ? "stream-one" : "packet-up")) mode = "";
+                    add(mode);
+                    add(p.Reality ? (p.XhttpExtra ?? "").Trim() : "");
+                }
+            }
+            else if (proto == "https") add(Norm(string.IsNullOrEmpty(p.Sni) ? p.Server : p.Sni));
+            return k.ToString();
+        }
+
+        private static string Norm(string s) => (s ?? "").Trim().ToLowerInvariant();
     }
 }

@@ -1425,12 +1425,12 @@ namespace CS_Ray.UI
             var result = Core.Config.LinkParser.Parse(link);
             if (!result.Ok) { Log("Parse error: " + result.Error); return; }
             result.Profile.Group = ProfileStore.ManualGroup; // hand-added → Manual group
-            var saved = _store.AddOrUpdate(result.Profile);
+            var saved = _store.AddOrUpdate(result.Profile, out bool replaced);
             RefreshGroups();
             SelectTabByTag(ProfileStore.ManualGroup); // show it where it lives
             for (int i = 0; i < _listProfiles.Items.Count; i++)
                 if (((Row)_listProfiles.Items[i]).Profile.Id == saved.Id) { _listProfiles.SelectedIndex = i; break; }
-            Log("Saved profile: " + (string.IsNullOrEmpty(saved.Name) ? saved.Server : saved.Name) +
+            Log((replaced ? "Updated existing server (same endpoint): " : "Saved profile: ") + (string.IsNullOrEmpty(saved.Name) ? saved.Server : saved.Name) +
                 " (" + saved.Protocol + ", " + saved.Network + ") → Manual. " + _store.Profiles.Count + " profile(s).");
         }
 
@@ -1441,12 +1441,12 @@ namespace CS_Ray.UI
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Result == null) return;
                 dlg.Result.Group = ProfileStore.ManualGroup;
-                var saved = _store.AddOrUpdate(dlg.Result);
+                var saved = _store.AddOrUpdate(dlg.Result, out bool replaced);
                 RefreshGroups();
                 SelectTabByTag(ProfileStore.ManualGroup);
                 for (int i = 0; i < _listProfiles.Items.Count; i++)
                     if (((Row)_listProfiles.Items[i]).Profile.Id == saved.Id) { _listProfiles.SelectedIndex = i; break; }
-                Log("Added server: " + LabelOf(saved) + " (" + saved.Protocol + ") → Manual.");
+                Log((replaced ? "Updated existing server (same endpoint): " : "Added server: ") + LabelOf(saved) + " (" + saved.Protocol + ") → Manual.");
             }
         }
 

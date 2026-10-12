@@ -172,6 +172,54 @@ namespace CS_Ray.Core.Config
             Unsupported(Check, "tag hysteria2 scheme",
                 LinkParser.Parse("hysteria2://pw@1.2.3.4:443#HY2"), "Hysteria2");
 
+            // Manual-add dedup: the same link re-added updates in place; a different security/transport is a new server.
+            {
+                string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "csray-dedup-" + Guid.NewGuid().ToString("N") + ".json");
+                try
+                {
+                    var store = new ProfileStore(tmp);
+                    const string U = "5d8a2b98-8129-4e5c-bc48-3f75e148d1a6", K = "q0ZjwXLc5OCk4V6-cLx3eKZYbcY3wbRW0V5yRS5pXGw";
+                    string R(string q) => "vless://" + U + "@1.2.3.4:443?type=tcp&security=reality&sni=a.com&pbk=" + K + "&sid=ab12&fp=chrome&flow=xtls-rprx-vision" + q;
+                    bool Add(string link, string group = null)
+                    {
+                        var pr = LinkParser.Parse(link).Profile; pr.Group = group;
+                        store.AddOrUpdate(pr, out bool replaced);
+                        return replaced;
+                    }
+                    Add(R("#first"));
+                    string id = store.Profiles[0].Id;
+                    bool again = Add(R("#renamed"));
+                    Check("dedup: same link re-added updates in place", again && store.Profiles.Count == 1 && store.Profiles[0].Id == id &&
+                          store.Profiles[0].Name == "renamed", "count=" + store.Profiles.Count + " replaced=" + again);
+                    bool prefsOnly = Add(R("&fp=firefox&spx=%2Fx&allowInsecure=1#prefs").Replace(U, U.ToUpperInvariant()).Replace("fp=chrome&", ""));
+                    Check("dedup: fp / spiderX / uuid case alone = same server", prefsOnly && store.Profiles.Count == 1, "count=" + store.Profiles.Count);
+                    Check("dedup: different sni = new server", !Add(R("#x").Replace("sni=a.com", "sni=b.com")), "");
+                    Check("dedup: different pbk = new server", !Add(R("#x").Replace(K, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")), "");
+                    Check("dedup: different short id = new server", !Add(R("#x").Replace("sid=ab12", "sid=cd34")), "");
+                    Check("dedup: Vision vs no flow = new server", !Add(R("#x").Replace("&flow=xtls-rprx-vision", "")), "");
+                    Check("dedup: same link in a sub group = separate", !Add(R("#x"), "sub-1") && store.Profiles.Count == 6, "count=" + store.Profiles.Count);
+                    const string W = "vless://" + U + "@5.6.7.8:443?type=ws&security=tls&sni=c.com&path=%2Fa";
+                    Add(W + "#w");
+                    Check("dedup: ws empty host = host of the SNI", Add(W + "&host=C.com#w2"), "");
+                    Check("dedup: ws different path = new server", !Add(W.Replace("%2Fa", "%2Fb") + "#w3"), "");
+                    Check("dedup: tls vs plain = new server", !Add(W.Replace("security=tls", "security=none") + "#w4"), "");
+                    Check("dedup: tcp vs raw = same server", Add(R("#raw").Replace("type=tcp", "type=raw")), "");
+                    Check("dedup: SS different password = new server",
+                          !Add("ss://" + B64("aes-128-gcm:pw1") + "@9.9.9.9:8388#s1") & !Add("ss://" + B64("aes-128-gcm:pw2") + "@9.9.9.9:8388#s2"), "");
+                    int n = store.Profiles.Count;
+                    Check("dedup: link without #name keeps the given name", Add(W) && store.Profiles.Count == n &&
+                          store.Profiles.Any(x => x.Name == "w2") && !store.Profiles.Any(x => string.IsNullOrEmpty(x.Name)), "");
+                    string V(string aid) => "vmess://" + B64("{\"add\":\"7.7.7.7\",\"port\":\"80\",\"id\":\"" + U + "\",\"aid\":\"" + aid + "\",\"net\":\"tcp\",\"ps\":\"v\"}");
+                    Add(V("0"));
+                    Check("dedup: unsupported import never overwrites a runnable one", !Add(V("2")) &&
+                          store.Profiles.Count(x => x.Server == "7.7.7.7") == 2 && store.Profiles.Any(x => x.Server == "7.7.7.7" && !x.Unsupported), "");
+                    string X = "vless://" + U + "@8.8.4.4:443?type=xhttp&security=reality&sni=a.com&pbk=" + K + "&sid=ab12&path=%2Fp";
+                    Add(X + "&mode=auto#x1");
+                    Check("dedup: xhttp auto = stream-one over REALITY", Add(X + "&mode=stream-one#x2"), "");
+                }
+                finally { try { System.IO.File.Delete(tmp); } catch { } }
+            }
+
             // A truly malformed / unknown line is still rejected (distinct from recognized-but-unsupported).
             Reject(Check, "reject unknown scheme", LinkParser.Parse("foobar://x"), "Unrecognized scheme");
 
