@@ -19,7 +19,8 @@ Protocols:
 
 Other stuff:
 
-- two modes: system proxy, or full tunnel (TUN) that takes all the traffic of the PC, with DNS that doesn't leak
+- a local SOCKS5 and HTTP proxy on `127.0.0.1:10810` that any app can use
+- two modes on top of that: system proxy, or full tunnel (TUN) that takes all the traffic of the PC, with DNS that doesn't leak
 - UDP over VLESS and VMess
 - subscriptions: normal base64 link lists, Clash YAML and sing-box JSON
 - delay test for your servers
@@ -37,7 +38,12 @@ Get the latest version from the [Releases](https://github.com/hamed7ir/CS-Ray/re
 
 You need .NET Framework 4.7 or newer. Windows 10 and 11 already have it. If you're not sure, the installer has a "Check requirements" button.
 
-On Windows RT 8.1 the device has to be jailbroken, because RT only runs desktop apps that Microsoft signed.
+Where it runs:
+
+- Windows 10 on ARM32 (build 15035). This is the main target.
+- Windows RT 8.1, jailbroken. RT only runs desktop apps that Microsoft signed.
+- Windows RT 8.0, jailbroken too, but it needs the .NET Framework 4.8 update, and that one is hard to find for RT 8.0 right now.
+- normal x86 and x64 Windows, 7 and newer
 
 Your servers and settings are saved in `Documents\CS-Ray\profiles.json`. Uninstalling doesn't delete them.
 
