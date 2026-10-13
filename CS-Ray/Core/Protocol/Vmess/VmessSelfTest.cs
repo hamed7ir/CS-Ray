@@ -112,6 +112,39 @@ namespace CS_Ray.Core.Protocol.Vmess
                 Check("Full request header seal→open round-trips", Eq(body, opened));
             }
 
+            // ChunkMasking + GlobalPadding (option 0x0D), vectors checked against Xray 25.8.3.
+            {
+                byte[] H(string h) { var b = new byte[h.Length / 2]; for (int i = 0; i < b.Length; i++) b[i] = Convert.ToByte(h.Substring(2 * i, 2), 16); return b; }
+                var shake = new VmessBodyStream.ShakeSizeParser(H("101112131415161718191a1b1c1d1e1f"));
+                var draws = new StringBuilder(); for (int i = 0; i < 6; i++) draws.Append(shake.Next().ToString("x4"));
+                Check("SHAKE128(reqIV) draws", draws.ToString() == "fc918e43ecc4b6aea436a3be", draws.ToString());
+
+                var reqKey = H("000102030405060708090a0b0c0d0e0f"); var reqIV = H("101112131415161718191a1b1c1d1e1f");
+                var respKey = H("be45cb2605bf36bebde684841a28f0fd"); var respIV = H("fc2e2c73072bfa2bda03ff9307472deb");
+                var ms = new System.IO.MemoryStream();
+                var w = new VmessBodyStream(ms, reqKey, reqIV, respKey, respIV, 0, null, VmessRequest.OptionDefault);
+                w.Write(Encoding.ASCII.GetBytes("hello"), 0, 5);
+                long a = ms.Length;
+                w.Write(Encoding.ASCII.GetBytes("world"), 0, 5);
+                long b2 = ms.Length;
+                w.CloseWriteAsync(System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+                var wire = ms.ToArray();
+                Func<int, int, string> Seg = (o, n) => { var x = new byte[n]; Buffer.BlockCopy(wire, o, x, 0, n); return Hex(x); };
+                Check("0x0D chunk 'hello' (pad 17)", a == 40 && Seg(0, 23) == "8e65a316c4d586054e854b4a74fc9040de5bd5eb74d177", a + " " + Seg(0, 23));
+                Check("0x0D chunk 'world' (pad 4)", b2 - a == 27 && Seg((int)a, 23) == "b6b740387f89434ee97dd99074bd1202a99f22eba9ce8c", (b2 - a) + " " + Seg((int)a, 23));
+                Check("0x0D terminator (pad 54)", wire.Length - b2 == 72 && Seg((int)b2, 18) == "a3f8841527decc4faf420d9a660346dd1a99", (wire.Length - b2) + " " + Seg((int)b2, 18));
+
+                // Server side: chunk 'pong' + terminator, decoded with the response IV's stream (zero padding bytes).
+                var resp = new System.IO.MemoryStream();
+                var c1 = H("c2377ae9414f5ec4bb64b4ba72a776673ca2cc04974f"); resp.Write(c1, 0, c1.Length); resp.Write(new byte[28], 0, 28);
+                var t1 = H("deaaf75b631b09778035360a05d18570160c"); resp.Write(t1, 0, t1.Length); resp.Write(new byte[59], 0, 59);
+                resp.Position = 0;
+                var r = new VmessBodyStream(resp, reqKey, reqIV, respKey, respIV, 0, null, VmessRequest.OptionDefault);
+                var got = r.ReadChunkAsync(System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+                var end = r.ReadChunkAsync(System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+                Check("0x0D server chunk 'pong' then terminator", got != null && Encoding.ASCII.GetString(got) == "pong" && end == null, got == null ? "null" : Encoding.ASCII.GetString(got));
+            }
+
             sb.AppendLine();
             sb.AppendLine("RESULT: " + pass + " passed, " + fail + " failed.");
             return sb.ToString();

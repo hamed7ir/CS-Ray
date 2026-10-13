@@ -14,12 +14,15 @@ namespace CS_Ray.Core.Config
         public static string Flatten(string text, Dictionary<string, string> kv)
         {
             int i = 0;
-            try { return Value(text, ref i, kv); }
+            try { return Value(text, ref i, kv, 0); }
             catch (System.Exception) { return ""; }
         }
 
-        private static string Value(string s, ref int i, Dictionary<string, string> kv)
+        private const int MaxDepth = 32;   // real Clash lines nest ~4 deep; recursion past this would overflow the stack
+
+        private static string Value(string s, ref int i, Dictionary<string, string> kv, int depth)
         {
+            if (depth > MaxDepth) { i = s.Length; return ""; }
             Ws(s, ref i);
             if (i >= s.Length) return "";
             if (s[i] == '{')
@@ -33,7 +36,7 @@ namespace CS_Ray.Core.Config
                     string k = Scalar(s, ref i, ":,}");
                     Ws(s, ref i);
                     string v = "";
-                    if (i < s.Length && s[i] == ':') { i++; v = Value(s, ref i, kv); }
+                    if (i < s.Length && s[i] == ':') { i++; v = Value(s, ref i, kv, depth + 1); }
                     if (k.Length > 0 && !kv.ContainsKey(k)) kv[k] = v;
                     Ws(s, ref i);
                     if (i < s.Length && s[i] == ',') i++;
@@ -49,7 +52,7 @@ namespace CS_Ray.Core.Config
                     Ws(s, ref i);
                     if (i >= s.Length) break;
                     if (s[i] == ']') { i++; break; }
-                    string v = Value(s, ref i, kv);
+                    string v = Value(s, ref i, kv, depth + 1);
                     if (v.Length > 0) items.Add(v);
                     Ws(s, ref i);
                     if (i < s.Length && s[i] == ',') i++;

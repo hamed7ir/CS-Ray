@@ -16,7 +16,7 @@ namespace CS_Ray.Core.Protocol.Vmess
     ///   16 request body IV
     ///   16 request body Key
     ///   1  response auth V
-    ///   1  Option = 0x01 (standard / chunk stream)
+    ///   1  Option = 0x0D (ChunkStream | ChunkMasking | GlobalPadding — Xray's client default for AES-128-GCM)
     ///   1  (paddingLen &lt;&lt; 4) | Security
     ///   1  reserved = 0
     ///   1  Command = 0x01 (TCP)
@@ -32,6 +32,9 @@ namespace CS_Ray.Core.Protocol.Vmess
         public const byte CommandTcp = 0x01;
         public const byte CommandUdp = 0x02;
         public const byte OptionChunkStream = 0x01;
+        public const byte OptionChunkMasking = 0x04;     // chunk sizes XOR-masked from SHAKE128(body IV)
+        public const byte OptionGlobalPadding = 0x08;    // 0..63 random bytes after each chunk (needs masking)
+        public const byte OptionDefault = OptionChunkStream | OptionChunkMasking | OptionGlobalPadding;
         public const byte SecurityAes128Gcm = 0x03; // "auto" → AES-128-GCM
 
         // VMess address types (1=IPv4, 2=Domain, 3=IPv6).
@@ -56,7 +59,7 @@ namespace CS_Ray.Core.Protocol.Vmess
             var v = new byte[1]; Rng.GetBytes(v);
             ResponseHeader = v[0];
             Security = SecurityAes128Gcm;
-            Option = OptionChunkStream;
+            Option = OptionDefault;
         }
 
         /// <summary>Builds the plaintext request-header body (including the trailing FNV1a checksum).</summary>

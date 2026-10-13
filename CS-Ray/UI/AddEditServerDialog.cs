@@ -30,7 +30,7 @@ namespace CS_Ray.UI
         private readonly ThemedTextBox _txtName = NewText("Name (optional — defaults to address)");
         private readonly ThemedTextBox _txtAddress = NewText("Address (host or IP)");
         private readonly ThemedTextBox _txtPort = NewText("Port");
-        private readonly ThemedTextBox _txtUuid = NewText("UUID");
+        private readonly ThemedTextBox _txtUuid = NewText("UUID (or a custom id of up to 30 characters)");
         private readonly ThemedTextBox _txtUser = NewText("Username (optional)");
         private readonly ThemedTextBox _txtPassword = NewText("Password");
         private readonly ThemedTextBox _txtWsHost = NewText("Host (ws / xhttp / http header; comma-separated for http)");
@@ -249,7 +249,7 @@ namespace CS_Ray.UI
             {
                 string uuid = (_txtUuid.Text ?? "").Trim();
                 if (uuid.Length == 0) return "UUID is required.";
-                try { VlessProtocol.ParseUuid(uuid); } catch { return "UUID is malformed (need 32 hex / 8-4-4-4-12)."; }
+                try { VlessProtocol.ParseUuid(uuid); } catch { return "ID must be a UUID (8-4-4-4-12 hex) or a custom id of 1-30 bytes."; }
                 if (proto == "vmess") prof.VmessSecurity = "auto";   // always AEAD (no alterId, like Xray's client)
                 prof.Uuid = uuid;
                 prof.Network = Net;

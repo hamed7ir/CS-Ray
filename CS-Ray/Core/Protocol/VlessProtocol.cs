@@ -136,23 +136,48 @@ namespace CS_Ray.Core.Protocol
         }
 
         /// <summary>
-        /// Parses a UUID string (with or without dashes) into 16 bytes in RFC4122 /
-        /// string byte order. Deliberately not <see cref="Guid.ToByteArray"/>, which
-        /// reorders the first three fields to little-endian.
+        /// A VLESS / VMess user id → 16 bytes in RFC 4122 / string byte order (deliberately not
+        /// <see cref="Guid.ToByteArray"/>, which reorders the first three fields), exactly as Xray's common/uuid
+        /// ParseString: 32–36 UTF-8 bytes are a UUID — five hex groups 8-4-4-4-12, each optionally preceded by one '-',
+        /// any tail ignored; 1–30 bytes are a custom id, mapped to UUIDv5(SHA-1, nil namespace, id) — the bytes Xray,
+        /// sing-box and mihomo all derive. No trimming, no case folding (callers trim stored values).
         /// </summary>
         public static byte[] ParseUuid(string uuid)
         {
-            if (string.IsNullOrWhiteSpace(uuid))
-                throw new ArgumentException("UUID is empty.", nameof(uuid));
-
-            var hex = uuid.Replace("-", "").Trim();
-            if (hex.Length != 32)
-                throw new ArgumentException("UUID must be 32 hex chars (16 bytes).", nameof(uuid));
-
+            var text = Encoding.UTF8.GetBytes(uuid ?? "");
+            int l = text.Length;
+            if (l < 32 || l > 36)
+            {
+                if (l == 0) throw new ArgumentException("UUID is empty.", nameof(uuid));
+                if (l > 30) throw new ArgumentException("ID must be a UUID or a custom id of 1-30 bytes (this one is " + l + ").", nameof(uuid));
+                var input = new byte[16 + l];   // 16 zero bytes (the nil-UUID namespace), then the id
+                Buffer.BlockCopy(text, 0, input, 16, l);
+                byte[] h;
+                using (var sha = System.Security.Cryptography.SHA1.Create()) h = sha.ComputeHash(input);
+                var u = new byte[16];
+                Buffer.BlockCopy(h, 0, u, 0, 16);
+                u[6] = (byte)((u[6] & 0x0f) | 0x50);   // version 5
+                u[8] = (byte)((u[8] & 0x3f) | 0x80);   // RFC 4122 variant
+                return u;
+            }
             var bytes = new byte[16];
-            for (int i = 0; i < 16; i++)
-                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            int pos = 0, o = 0;
+            foreach (int group in new[] { 8, 4, 4, 4, 12 })
+            {
+                if (pos < l && text[pos] == (byte)'-') pos++;
+                if (l - pos < group) throw new ArgumentException("UUID is malformed (need 8-4-4-4-12 hex).", nameof(uuid));
+                for (int i = 0; i < group; i += 2) bytes[o++] = (byte)((Nibble(text[pos + i]) << 4) | Nibble(text[pos + i + 1]));
+                pos += group;
+            }
             return bytes;
+        }
+
+        private static int Nibble(byte c)
+        {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            throw new ArgumentException("UUID is malformed (not hex).");
         }
 
         private static async Task<byte[]> ReadExactAsync(Stream stream, int count, CancellationToken ct)

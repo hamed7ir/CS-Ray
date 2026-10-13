@@ -77,6 +77,9 @@ namespace CS_Ray.Core.Config
             // (label, directory) candidates in priority order. Documents/AppData get a CS-Ray subfolder; the
             // beside-exe fallback keeps profiles.json directly next to the exe (portable convention).
             var tried = new List<KeyValuePair<string, string>>();
+            // The portable zip ships a CS-Ray.portable marker: its settings stay in its own folder when that is writable.
+            if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "CS-Ray.portable")))
+                tried.Add(new KeyValuePair<string, string>("portable (beside-exe)", AppDomain.CurrentDomain.BaseDirectory));
             string docs = SafeFolder(Environment.SpecialFolder.MyDocuments);
             if (docs != null) tried.Add(new KeyValuePair<string, string>("Documents", Path.Combine(docs, "CS-Ray")));
             string appdata = SafeFolder(Environment.SpecialFolder.ApplicationData);
@@ -315,7 +318,7 @@ namespace CS_Ray.Core.Config
             {
                 case "vless":
                 case "vmess":
-                    add(Norm(p.Uuid).Replace("-", ""));
+                    add(UserIdKey(p.Uuid));
                     break;
                 case "shadowsocks":
                     add(Norm(p.SsMethod)); add(p.Password ?? "");
@@ -358,11 +361,11 @@ namespace CS_Ray.Core.Config
                 if (net == "xhttp")
                 {
                     // The mode only classifies support: runnable profiles use stream-one over REALITY and packet-up over
-                    // TLS, so auto and that effective mode are the same server. extra is read only by stream-one.
+                    // TLS, so auto and that effective mode are the same server. Both modes read extra.
                     string mode = Norm(p.XhttpMode);
                     if (mode == "auto" || mode == (p.Reality ? "stream-one" : "packet-up")) mode = "";
                     add(mode);
-                    add(p.Reality ? (p.XhttpExtra ?? "").Trim() : "");
+                    add((p.XhttpExtra ?? "").Trim());
                 }
             }
             else if (proto == "https") add(Norm(string.IsNullOrEmpty(p.Sni) ? p.Server : p.Sni));
@@ -370,5 +373,13 @@ namespace CS_Ray.Core.Config
         }
 
         private static string Norm(string s) => (s ?? "").Trim().ToLowerInvariant();
+
+        // The 16 bytes the server sees (a custom id and its mapped UUID are the same user; "Hello" and "hello" are not),
+        // or the trimmed text when it is not a valid id.
+        private static string UserIdKey(string id)
+        {
+            try { return BitConverter.ToString(Protocol.VlessProtocol.ParseUuid((id ?? "").Trim())); }
+            catch (ArgumentException) { return "raw:" + (id ?? "").Trim(); }
+        }
     }
 }

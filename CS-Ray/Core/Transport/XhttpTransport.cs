@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
+using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using CS_Ray.Core.Transport.Http2;
 
 namespace CS_Ray.Core.Transport
 {
@@ -12,22 +16,23 @@ namespace CS_Ray.Core.Transport
     /// XHTTP (a.k.a. SplitHTTP) client transport — "packet-up" mode, over standard TLS + HTTP/1.1 (no HTTP/2,
     /// no REALITY), mirroring <see cref="WebSocketTransport"/>'s place in the stack. It manages its OWN TLS
     /// connections (unlike WS, which wraps one inner transport) because XHTTP needs two:
-    ///   • Downlink: ONE long-lived chunked streaming GET to &lt;path&gt;/&lt;sessionID&gt; — the server streams the
-    ///     response body indefinitely; we parse HTTP/1.1 chunked transfer-encoding off the raw SslStream and feed
-    ///     bytes to VLESS as they arrive (NO hard read deadline — an idle-but-alive stream must not be killed).
-    ///   • Uplink: sequential HTTP/1.1 POSTs to &lt;path&gt;/&lt;sessionID&gt;/&lt;seq&gt; (incrementing seq; the server
-    ///     reassembles in order) over a SEPARATE keep-alive connection, so the held-open downlink can't starve them.
-    /// SNI from the link, standard cert validation (allowInsecure honored). Session correlated by a random UUID.
+    ///   • Downlink: ONE long-lived chunked streaming GET to &lt;path&gt;&lt;sessionID&gt; on its own connection — the
+    ///     server streams the response body indefinitely; we parse HTTP/1.1 chunked transfer-encoding off the raw
+    ///     stream and feed bytes to the protocol as they arrive (NO hard read deadline).
+    ///   • Uplink: HTTP/1.1 POSTs to &lt;path&gt;&lt;sessionID&gt;/&lt;seq&gt; (incrementing seq; the server reassembles in
+    ///     order) over a SEPARATE keep-alive connection. Writes are queued and a sender turns them into POSTs as Xray's
+    ///     dialer does: the first at once, later ones at least scMinPostsIntervalMs apart, each carrying everything
+    ///     queued (up to scMaxEachPostBytes) — so the upload rate is not one write per round trip.
+    /// Requests are shaped like Xray's (Go net/http): Host, User-Agent, Content-Length, then the rest sorted by key, with
+    /// the "chrome" fetch masquerade, x_padding and extra.headers from <see cref="XhttpSettings"/> (shared with stream-one).
     /// </summary>
     public class XhttpTransport : ITransport
     {
-        private static readonly RNGCryptoServiceProvider Rng = new RNGCryptoServiceProvider();
-
         private readonly string _sni;
         private readonly bool _allowInsecure;
-        private readonly string _basePath;
-        private readonly string _hostHeader;
-        private readonly Action<string> _log;     // verbose: logs the exact request head we send (null = quiet)
+        private readonly XhttpSettings _s;
+        private readonly string _escapedBase;      // Go-escaped base path, ending with '/'
+        private readonly Action<string> _log;      // verbose: logs the exact request head we send (null = quiet)
         private readonly string _sessionId = Guid.NewGuid().ToString();
         private bool _loggedGet;
 
@@ -36,29 +41,17 @@ namespace CS_Ray.Core.Transport
         private ITransport _downTls;
         private XhttpStream _stream;
 
-        public XhttpTransport(string sni, bool allowInsecure, string path, string hostHeader, Action<string> log = null)
+        public XhttpTransport(string sni, bool allowInsecure, XhttpSettings settings, Action<string> log = null)
         {
             _sni = sni;
             _allowInsecure = allowInsecure;
-            _basePath = NormalizeBase(path);
-            _hostHeader = hostHeader;
+            _s = settings ?? throw new ArgumentNullException(nameof(settings));
+            _escapedBase = XhttpSettings.EscapePath(_s.Path);
+            if (!_escapedBase.EndsWith("/")) _escapedBase += "/";
             _log = log;
         }
 
-        // The base path with a leading slash and no trailing slash; we append "/<sessionId>[/<seq>]".
-        private static string NormalizeBase(string path)
-        {
-            var p = (path ?? "").Trim();
-            if (p.Length == 0) return "";
-            if (!p.StartsWith("/")) p = "/" + p;
-            if (p.Length > 1) p = p.TrimEnd('/');
-            return p == "/" ? "" : p;
-        }
-
-        internal string Sni => _sni;
-        internal bool AllowInsecure => _allowInsecure;
-        internal string DialHost => _host;
-        internal int Port => _port;
+        internal XhttpSettings Settings => _s;
 
         public async Task ConnectAsync(string host, int port, CancellationToken ct)
         {
@@ -66,12 +59,12 @@ namespace CS_Ray.Core.Transport
 
             // Open the downlink and SEND the streaming GET so the session is registered — but DON'T read the
             // response yet: the server may emit the downlink only after it sees uplink seq=0, and we send that
-            // (the VLESS request header) on the first Write. Deferring the header parse to the first Read avoids
+            // (the protocol request header) on the first Write. Deferring the header parse to the first Read avoids
             // a deadlock of ConnectAsync against our own first POST.
             _downTls = TlsTransportFactory.Create(_sni, _allowInsecure);
             await _downTls.ConnectAsync(host, port, ct).ConfigureAwait(false);
             var ds = _downTls.GetStream();
-            string getHead = BuildHead("GET", _basePath + "/" + _sessionId, -1);
+            string getHead = BuildHead("GET", _sessionId, -1);
             if (_log != null && !_loggedGet) { _loggedGet = true; _log("XHTTP downlink GET →\r\n" + getHead.TrimEnd()); }
             var get = Encoding.ASCII.GetBytes(getHead);
             await ds.WriteAsync(get, 0, get.Length, ct).ConfigureAwait(false);
@@ -85,9 +78,14 @@ namespace CS_Ray.Core.Transport
 
         public void Close()
         {
-            try { _stream?.CloseUplink(); } catch { }
+            try { _stream?.Shutdown(); } catch { }
+            AbortDownlink();
+        }
+
+        // Closing the downlink connection unblocks a pending read (socket reads ignore tokens on .NET Framework).
+        internal void AbortDownlink()
+        {
             try { _downTls?.Close(); } catch { }
-            _downTls = null;
         }
 
         // Open a fresh TLS connection for the uplink (separate from the held-open downlink).
@@ -98,59 +96,107 @@ namespace CS_Ray.Core.Transport
             return up;
         }
 
-        internal string PostPath(long seq) => _basePath + "/" + _sessionId + "/" + seq;
+        internal string PostSuffix(long seq) => _sessionId + "/" + seq.ToString(CultureInfo.InvariantCulture);
 
-        // bodyLen < 0 → no body (GET); else POST with Content-Length. Matches the Xray XHTTP client:
-        // the REQUIRED x_padding is carried in the Referer header (PlacementQueryInHeader) — the server returns
-        // HTTP 400 "invalid padding length" if it's missing/out of range (default ~100-1000). POST sets NO
-        // Content-Type (as Xray does); GET signals a streamed downlink via Accept: text/event-stream.
-        internal string BuildHead(string method, string pathAndQuery, int bodyLen)
+        /// <summary>
+        /// One request head as Go's net/http writes Xray's: "&lt;method&gt; &lt;base&gt;&lt;suffix&gt;[?query] HTTP/1.1", Host,
+        /// User-Agent, Content-Length (POST), then the remaining headers sorted by their wire name, and — for the GET,
+        /// which Xray sends through an http.Transport with keep-alives off — "Connection: close" last. The POST carries no
+        /// Content-Type and no Connection header. <paramref name="bodyLen"/> &lt; 0 = no body (GET).
+        /// </summary>
+        internal string BuildHead(string method, string suffix, int bodyLen)
         {
+            string pad = _s.MakePadding();
+            string query = _s.QueryWithPadding(pad);
+            var regular = _s.RegularHeaders(_escapedBase, pad, grpcContentType: false);
+            // No UA header → Go's default; an explicitly empty one → none at all (Go writes no empty User-Agent).
+            string ua = regular.Where(kv => kv.Key == "user-agent").Select(kv => kv.Value).FirstOrDefault() ?? "Go-http-client/1.1";
+            bool userAcceptEncoding = regular.Any(kv => kv.Key == "accept-encoding");
+            var rest = regular.Where(kv => kv.Key != "user-agent" && kv.Key != "host" && kv.Key != "content-length" && kv.Key != "connection")
+                              .Select(kv => new KeyValuePair<string, string>(WireName(kv.Key), kv.Value))
+                              .OrderBy(kv => kv.Key, StringComparer.Ordinal);
+
             var sb = new StringBuilder();
-            sb.Append(method).Append(' ').Append(pathAndQuery).Append(" HTTP/1.1\r\n");
-            sb.Append("Host: ").Append(_hostHeader).Append("\r\n");
-            sb.Append("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36\r\n");
-            sb.Append("Referer: https://").Append(_hostHeader).Append(pathAndQuery).Append("?x_padding=").Append(MakePadding()).Append("\r\n");
-            if (method == "GET")
+            sb.Append(method).Append(' ').Append(_escapedBase).Append(suffix);
+            if (query.Length > 0) sb.Append('?').Append(query);
+            sb.Append(" HTTP/1.1\r\n");
+            sb.Append("Host: ").Append(_s.Host).Append("\r\n");
+            if (ua.Length > 0) sb.Append("User-Agent: ").Append(ua).Append("\r\n");
+            if (bodyLen >= 0) sb.Append("Content-Length: ").Append(bodyLen.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+            foreach (var kv in rest) sb.Append(kv.Key).Append(": ").Append(kv.Value).Append("\r\n");
+            if (bodyLen < 0)
             {
-                sb.Append("Accept: text/event-stream\r\n");
-                sb.Append("Cache-Control: no-cache\r\n");
+                // The GET goes through Go's http.Transport (keep-alives off, compression on), which adds these two last.
+                if (!userAcceptEncoding) sb.Append("Accept-Encoding: gzip\r\n");
+                sb.Append("Connection: close\r\n");
             }
-            if (bodyLen >= 0) sb.Append("Content-Length: ").Append(bodyLen).Append("\r\n");
-            sb.Append("Connection: keep-alive\r\n\r\n");
+            sb.Append("\r\n");
             return sb.ToString();
         }
 
-        // Random padding length in [100, 1000] (Xray's default x_padding range), filled with '0' — the server
-        // validates only the LENGTH. RNGCryptoServiceProvider per the project rule (never System.Random).
-        private static string MakePadding()
+        // The spelling Go puts on the wire: browser.go assigns these keys directly (kept as written); everything else goes
+        // through Header.Set / Add, i.e. canonical MIME form.
+        private static string WireName(string lower)
         {
-            var b = new byte[2]; Rng.GetBytes(b);
-            int v = ((b[0] << 8) | b[1]) & 0xFFFF;
-            return new string('0', 100 + (v % 901));
+            switch (lower)
+            {
+                case "sec-ch-ua": return "Sec-CH-UA";
+                case "sec-ch-ua-mobile": return "Sec-CH-UA-Mobile";
+                case "sec-ch-ua-platform": return "Sec-CH-UA-Platform";
+                case "dnt": return "DNT";
+            }
+            var c = lower.ToCharArray();
+            bool up = true;
+            for (int i = 0; i < c.Length; i++)
+            {
+                if (c[i] == ' ' || c[i] == ':') return lower;   // not a token: Go leaves it as is
+                c[i] = up ? char.ToUpperInvariant(c[i]) : char.ToLowerInvariant(c[i]);
+                up = c[i] == '-';
+            }
+            return new string(c);
         }
     }
 
     /// <summary>
-    /// The duplex stream VLESS consumes over an XHTTP session: reads pull from the downlink chunked GET body;
-    /// writes push as sequential uplink POSTs (one keep-alive connection, seq-ordered).
+    /// The duplex stream the protocol consumes over an XHTTP session: reads pull from the downlink chunked GET body;
+    /// writes queue for the uplink sender, which posts them in seq order on one keep-alive connection.
     /// </summary>
     public class XhttpStream : Stream
     {
         private readonly XhttpTransport _t;
-        private readonly Stream _down;           // downlink SslStream (read side)
+        private readonly Stream _down;           // downlink stream (read side)
         private readonly Action<string> _log;
-        private readonly SemaphoreSlim _upLock = new SemaphoreSlim(1, 1);
         private bool _loggedPost;
 
         private bool _downParsed, _downChunked, _downEof;
+        private Stream _gunzip;                   // the downlink body when it arrives gzipped (we offer gzip, like Go)
         private byte[] _chunk; private int _chunkOff, _chunkLeft;
+
+        // Uplink queue → sender loop (Xray dialer.go: blocking pipe + split loop).
+        private readonly object _q = new object();
+        private readonly List<byte[]> _pending = new List<byte[]>();
+        private int _pendingBytes;
+        private TaskCompletionSource<bool> _dataSignal = NewSignal(), _spaceSignal = NewSignal();
+        private readonly CancellationTokenSource _upCts = new CancellationTokenSource();
+        private Task _sender;
+        private volatile Exception _upError;
+        private readonly int _maxPost, _queueLimit;
 
         private long _seq;
         private ITransport _upTls;
         private Stream _up;                       // uplink TLS stream (write side, keep-alive)
+        private long _upUsedAt;                   // Stopwatch timestamp of the uplink connection's last request
+        private const int UplinkIdleReopenMs = 30000;   // reconnect rather than reuse a connection idle this long
 
-        public XhttpStream(XhttpTransport t, Stream down, Action<string> log = null) { _t = t; _down = down; _log = log; }
+        public XhttpStream(XhttpTransport t, Stream down, Action<string> log = null)
+        {
+            _t = t; _down = down; _log = log;
+            var s = t.Settings;
+            _maxPost = Math.Max(1, XhttpSettings.Pick(s.MaxPostFrom, s.MaxPostTo));   // rolled once per session (Xray); no floor: the server enforces it
+            _queueLimit = Math.Max(64 * 1024, _maxPost - 8192);
+        }
+
+        private static TaskCompletionSource<bool> NewSignal() => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override bool CanRead => true;
         public override bool CanWrite => true;
@@ -170,8 +216,27 @@ namespace CS_Ray.Core.Transport
         // ── Downlink (read) ──
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
+            try { return await ReadDownAsync(buffer, offset, count, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (_upError != null && !(ex is OperationCanceledException))
+            {
+                // The uplink failed first (and closed the downlink to say so): report the real cause.
+                throw new IOException("XHTTP uplink failed: " + _upError.Message, _upError);
+            }
+        }
+
+        private async Task<int> ReadDownAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
             if (count <= 0) return 0;
+            if (_upError != null) throw new IOException("XHTTP uplink failed: " + _upError.Message, _upError);
             if (!_downParsed) await ParseDownlinkHeadersAsync(ct).ConfigureAwait(false);
+            if (_gunzip != null) return await _gunzip.ReadAsync(buffer, offset, count, ct).ConfigureAwait(false);
+            return await ReadRawAsync(buffer, offset, count, ct).ConfigureAwait(false);
+        }
+
+        // The body bytes as sent (de-chunked, not decompressed).
+        internal async Task<int> ReadRawAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            if (count <= 0) return 0;
             if (_downEof) return 0;
 
             if (!_downChunked)
@@ -195,6 +260,7 @@ namespace CS_Ray.Core.Transport
                 throw new InvalidOperationException("XHTTP downlink GET failed (HTTP " + code + "). Response:\r\n" + head);
             _downChunked = HeaderContains(head, "Transfer-Encoding", "chunked");
             // If not chunked, we read the body as a raw stream until the server closes the connection.
+            if (HeaderContains(head, "Content-Encoding", "gzip")) _gunzip = new GZipStream(new RawBody(this), CompressionMode.Decompress);
         }
 
         private async Task<bool> NextChunkAsync(CancellationToken ct)
@@ -221,37 +287,158 @@ namespace CS_Ray.Core.Transport
             return true;
         }
 
-        // ── Uplink (write) ──
+        // ── Uplink (write): queue, the sender posts ──
         public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
             if (count <= 0) return;
-            await _upLock.WaitAsync(ct).ConfigureAwait(false); // serialize POSTs → preserve seq order
-            try { await PostAsync(buffer, offset, count, ct).ConfigureAwait(false); }
-            finally { _upLock.Release(); }
+            var copy = new byte[count];
+            Buffer.BlockCopy(buffer, offset, copy, 0, count);
+            while (true)
+            {
+                Task wait;
+                lock (_q)
+                {
+                    if (_upError != null) throw new IOException("XHTTP uplink failed: " + _upError.Message, _upError);
+                    if (_upCts.IsCancellationRequested) throw new ObjectDisposedException("XHTTP uplink");
+                    if (_pendingBytes == 0 || _pendingBytes + count <= _queueLimit)
+                    {
+                        _pending.Add(copy);
+                        _pendingBytes += count;
+                        _dataSignal.TrySetResult(true);
+                        if (_sender == null) _sender = Task.Run(SenderLoopAsync);
+                        return;
+                    }
+                    wait = _spaceSignal.Task;   // backpressure: the sender has not taken the queue yet
+                }
+                var mine = new TaskCompletionSource<bool>();
+                using (ct.Register(() => mine.TrySetCanceled()))
+                    await Task.WhenAny(wait, mine.Task).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+            }
         }
 
-        private async Task PostAsync(byte[] data, int offset, int count, CancellationToken ct)
+        private async Task SenderLoopAsync()
         {
-            if (_up == null) { _upTls = await _t.OpenUplinkTlsAsync(ct).ConfigureAwait(false); _up = _upTls.GetStream(); }
-            long seq = _seq;
-            string headStr = _t.BuildHead("POST", _t.PostPath(seq), count);
-            if (_log != null && !_loggedPost) { _loggedPost = true; _log("XHTTP uplink POST (seq " + seq + ", " + count + "B) →\r\n" + headStr.TrimEnd()); }
-            var head = Encoding.ASCII.GetBytes(headStr);
+            var ct = _upCts.Token;
+            var s = _t.Settings;
+            long lastPost = 0;
             try
             {
-                await _up.WriteAsync(head, 0, head.Length, ct).ConfigureAwait(false);
-                await _up.WriteAsync(data, offset, count, ct).ConfigureAwait(false);
-                await _up.FlushAsync(ct).ConfigureAwait(false);
+                while (!ct.IsCancellationRequested)
+                {
+                    Task wait;
+                    lock (_q) wait = _pendingBytes > 0 ? Task.CompletedTask : _dataSignal.Task;
+                    await wait.ConfigureAwait(false);
+                    if (ct.IsCancellationRequested) break;
 
-                bool reusable = await DrainResponseAsync(_up, ct).ConfigureAwait(false);
-                _seq = seq + 1;
-                if (!reusable) CloseUplink(); // can't safely reuse → next POST reopens
+                    // At least scMinPostsIntervalMs between two POSTs; the first goes out at once. Monotonic clock: a wall
+                    // clock step must not hold the uplink.
+                    if (lastPost != 0)
+                    {
+                        long elapsedMs = Math.Max(0, (Stopwatch.GetTimestamp() - lastPost) * 1000 / Stopwatch.Frequency);
+                        int gap = XhttpSettings.Pick(s.MinIntervalFrom, s.MinIntervalTo) - (int)Math.Min(int.MaxValue, elapsedMs);
+                        if (gap > 0) await Task.Delay(gap, ct).ConfigureAwait(false);
+                    }
+
+                    byte[] body;
+                    lock (_q)
+                    {
+                        int take = Math.Min(_pendingBytes, _maxPost);
+                        body = new byte[take];
+                        int o = 0;
+                        while (o < take)
+                        {
+                            var first = _pending[0];
+                            int n = Math.Min(first.Length, take - o);
+                            Buffer.BlockCopy(first, 0, body, o, n);
+                            o += n;
+                            if (n == first.Length) _pending.RemoveAt(0);
+                            else { var restOf = new byte[first.Length - n]; Buffer.BlockCopy(first, n, restOf, 0, restOf.Length); _pending[0] = restOf; }
+                        }
+                        _pendingBytes -= take;
+                        if (_pendingBytes == 0) _dataSignal = NewSignal();
+                        var space = _spaceSignal; _spaceSignal = NewSignal(); space.TrySetResult(true);
+                    }
+                    lastPost = Stopwatch.GetTimestamp();
+                    await PostAsync(body, ct).ConfigureAwait(false);
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                CloseUplink(); // broken uplink → drop it; rethrow so the relay tears the session down
-                throw;
+                if (!ct.IsCancellationRequested)
+                {
+                    _upError = ex;
+                    _t.AbortDownlink();   // the session is over: wake the reader too, with the uplink's reason
+                }
+                lock (_q) { _spaceSignal.TrySetResult(true); }   // wake a blocked writer so it sees the error
+                CloseUplink();
             }
+        }
+
+        private async Task PostAsync(byte[] data, CancellationToken ct)
+        {
+            long seq = _seq;
+            string headStr = _t.BuildHead(_t.Settings.Method, _t.PostSuffix(seq), data.Length);
+            if (_log != null && !_loggedPost) { _loggedPost = true; _log("XHTTP uplink POST (seq " + seq + ", " + data.Length + "B) →\r\n" + headStr.TrimEnd()); }
+            var head = Encoding.ASCII.GetBytes(headStr);
+            var req = new byte[head.Length + data.Length];   // head and body in ONE write, as Go's req.Write does
+            Buffer.BlockCopy(head, 0, req, 0, head.Length);
+            Buffer.BlockCopy(data, 0, req, head.Length, data.Length);
+
+            // A long-idle keep-alive connection is likely gone (nginx, CDNs and load balancers close idle ones): reopen.
+            if (_up != null && (Stopwatch.GetTimestamp() - _upUsedAt) * 1000 / Stopwatch.Frequency > UplinkIdleReopenMs) CloseUplink();
+            for (int attempt = 0; ; attempt++)
+            {
+                bool reused = _up != null;
+                if (_up == null) { _upTls = await _t.OpenUplinkTlsAsync(ct).ConfigureAwait(false); _up = _upTls.GetStream(); }
+                bool sent = false;
+                try
+                {
+                    await _up.WriteAsync(req, 0, req.Length, ct).ConfigureAwait(false);
+                    await _up.FlushAsync(ct).ConfigureAwait(false);
+                    sent = true;
+                    bool reusable = await DrainResponseAsync(_up, ct).ConfigureAwait(false);
+                    _upUsedAt = Stopwatch.GetTimestamp();
+                    _seq = seq + 1;
+                    if (!reusable) CloseUplink(); // can't safely reuse → next POST reopens
+                    return;
+                }
+                catch (Exception ex) when (reused && attempt == 0 && !ct.IsCancellationRequested && (!sent || ex is NoResponseException))
+                {
+                    // The kept-alive connection was closed under us before any answer: send the same POST (same seq; the
+                    // server drops a seq it has already taken) once more on a fresh connection.
+                    CloseUplink();
+                }
+                catch
+                {
+                    CloseUplink(); // broken uplink → drop it; rethrow so the session ends
+                    throw;
+                }
+            }
+        }
+
+        /// <summary>The connection ended before a single byte of the response.</summary>
+        private sealed class NoResponseException : EndOfStreamException
+        {
+            public NoResponseException() : base("Connection closed before the XHTTP response.") { }
+        }
+
+        /// <summary>The de-chunked downlink body, for the gzip decoder.</summary>
+        private sealed class RawBody : Stream
+        {
+            private readonly XhttpStream _s;
+            public RawBody(XhttpStream s) { _s = s; }
+            public override bool CanRead => true;
+            public override bool CanWrite => false;
+            public override bool CanSeek => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override int Read(byte[] buffer, int offset, int count) => _s.ReadRawAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => _s.ReadRawAsync(buffer, offset, count, ct);
         }
 
         // Reads + fully consumes one POST response. Returns whether the keep-alive connection is safe to reuse.
@@ -295,9 +482,17 @@ namespace CS_Ray.Core.Transport
             _upTls = null; _up = null;
         }
 
+        /// <summary>Stops the sender (queued bytes are dropped) and closes the uplink connection.</summary>
+        internal void Shutdown()
+        {
+            try { _upCts.Cancel(); } catch { }
+            lock (_q) { _dataSignal.TrySetResult(true); _spaceSignal.TrySetResult(true); }
+            CloseUplink();
+        }
+
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { CloseUplink(); try { _upLock.Dispose(); } catch { } }
+            if (disposing) Shutdown();
             base.Dispose(disposing);
         }
 
@@ -310,7 +505,11 @@ namespace CS_Ray.Core.Transport
             while (true)
             {
                 int n = await s.ReadAsync(one, 0, 1, ct).ConfigureAwait(false);
-                if (n <= 0) throw new EndOfStreamException("Connection closed during XHTTP response. Partial:\r\n" + Encoding.ASCII.GetString(buf.ToArray()));
+                if (n <= 0)
+                {
+                    if (buf.Length == 0) throw new NoResponseException();
+                    throw new EndOfStreamException("Connection closed during XHTTP response. Partial:\r\n" + Encoding.ASCII.GetString(buf.ToArray()));
+                }
                 buf.WriteByte(one[0]);
                 c1 = c2; c2 = c3; c3 = c4; c4 = one[0];
                 if (c1 == 0x0D && c2 == 0x0A && c3 == 0x0D && c4 == 0x0A) break;

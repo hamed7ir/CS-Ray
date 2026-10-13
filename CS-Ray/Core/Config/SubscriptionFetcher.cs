@@ -178,12 +178,20 @@ namespace CS_Ray.Core.Config
         private static ProxyProfile ClashProxyToProfile(List<string> lines, Action<string> log)
         {
             var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string listKey = null;   // a "key:" with no value collects the "- item" lines under it (http-opts path / Host lists)
             foreach (var l0 in lines)
             {
                 string l = l0.Trim();
                 // "- {name: a, type: vmess, …}" — subconverter's default (flow) style: the whole proxy on one line.
-                if (l.StartsWith("{")) { YamlFlow.Flatten(l, kv); continue; }
+                if (l.StartsWith("{")) { YamlFlow.Flatten(l, kv); listKey = null; continue; }
+                if (l.StartsWith("- ") && listKey != null && l.IndexOf(": ", StringComparison.Ordinal) < 0)
+                {
+                    string item = StripYamlQuotes(StripYamlComment(l.Substring(2).Trim()));
+                    if (item.Length > 0) kv[listKey] = kv[listKey].Length > 0 ? kv[listKey] + "," + item : item;
+                    continue;
+                }
                 int c = l.IndexOf(':');
+                listKey = null;
                 if (c <= 0) continue;
                 string k = l.Substring(0, c).Trim();
                 string raw = l.Substring(c + 1).Trim();
@@ -195,13 +203,17 @@ namespace CS_Ray.Core.Config
                     continue;
                 }
                 string v = StripYamlQuotes(StripYamlComment(raw));
-                if (k.Length > 0 && !kv.ContainsKey(k)) kv[k] = v; // first wins (path/Host appear once per block)
+                if (k.Length > 0 && !kv.ContainsKey(k)) { kv[k] = v; if (v.Length == 0) listKey = k; } // first wins (path/Host appear once per block)
             }
             string type = Get(kv, "type").ToLowerInvariant();
             string server = Get(kv, "server");
             if (type.Length == 0 || server.Length == 0 || !int.TryParse(Get(kv, "port"), out int port)) return null; // malformed → skip
 
             string rawNet = Get(kv, "network").ToLowerInvariant();
+            // network: http is the tcp http-header camouflage (mihomo: TLS first, then the header); http-opts' path and
+            // headers.Host lists become the comma lists a share link's path= / host= carry.
+            string headerType = null;
+            if (rawNet == "http") { rawNet = "tcp"; headerType = "http"; }
             string net = (rawNet == "" || rawNet == "tcp" || rawNet == "raw") ? "tcp" : (rawNet == "ws" ? "ws" : rawNet);
             string sni = First(Get(kv, "servername"), Get(kv, "sni"));
             if (sni.Length == 0 && net == "ws") sni = Get(kv, "Host");   // mihomo: a ws server name falls back to the Host header
@@ -214,7 +226,7 @@ namespace CS_Ray.Core.Config
             bool reality = kv.ContainsKey("reality-opts");
 
             var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure,
-                                       UseTls = YamlTrue(Get(kv, "tls")) || reality };
+                                       UseTls = YamlTrue(Get(kv, "tls")) || reality, HeaderType = headerType };
             string reason = null;
             switch (type)
             {
@@ -239,7 +251,7 @@ namespace CS_Ray.Core.Config
                     p.Fingerprint = Get(kv, "client-fingerprint");
                     reason = httpUpgrade ?? (reality ? RealityReason(p, rawNet, flow)
                            : flow.Length > 0 ? VisionReason(p, rawNet, flow)
-                           : TransportReason(rawNet)) ?? LinkParser.EncryptionReason(Get(kv, "encryption"));
+                           : TransportReason(rawNet)) ?? LinkParser.HeaderComboReason(p) ?? LinkParser.EncryptionReason(Get(kv, "encryption"));
                     break;
                 case "ss":
                 case "shadowsocks":
@@ -326,14 +338,39 @@ namespace CS_Ray.Core.Config
             else if (ttype.Length > 0) rawNet = ttype; // http/grpc/httpupgrade/quic → unsupported below
             string sni = ""; bool insecure = false, reality = false;
             var tls = JObj(d, "tls");
-            if (tls != null) { sni = JStr(tls, "server_name"); insecure = JBool(tls, "insecure"); reality = JObj(tls, "reality") != null; }
+            if (tls != null)
+            {
+                sni = JStr(tls, "server_name"); insecure = JBool(tls, "insecure");
+                // "reality": {"enabled": false, …} is plain TLS; without the flag, a public_key means REALITY.
+                var rl = JObj(tls, "reality");
+                reality = rl != null && (rl.ContainsKey("enabled") ? JBool(rl, "enabled") : JStr(rl, "public_key").Length > 0);
+            }
             if (wsHost.Length == 0) wsHost = First(sni, server);
+            bool tlsOn = tls != null && (JBool(tls, "enabled") || reality);
+
+            // sing-box's "http" transport is plain HTTP/1.1 without TLS — wire-compatible with Xray's tcp http-header
+            // camouflage (its docs: "plain HTTP is merged into the HTTP transport"); over TLS it is HTTP/2, which we lack.
+            string headerType = null, httpReason = null;
+            if (ttype == "http")
+            {
+                string method = JStr(transport, "method");
+                if (tlsOn) httpReason = "HTTP/2 transport (sing-box http over TLS) — unsupported";
+                else if (method.Length > 0 && !method.Equals("GET", StringComparison.OrdinalIgnoreCase))
+                    httpReason = "HTTP transport method '" + method + "' — unsupported (GET only)";
+                else
+                {
+                    rawNet = "tcp"; headerType = "http";
+                    wsPath = First(JStr(transport, "path"), "/");
+                    var th = JObj(transport, "headers");
+                    wsHost = First(th != null ? JFirst(th, "Host") : "", JList(transport, "host"), server);   // sing-box: else the server
+                }
+            }
 
             string net = (rawNet == "tcp" || rawNet == "ws") ? rawNet : "tcp";
             string flow = JStr(d, "flow");
             string name = First(JStr(d, "tag"), server);
             var p = new ProxyProfile { Server = server, Port = port, Name = name, Network = net, Sni = sni, WsPath = wsPath, WsHost = wsHost, AllowInsecure = insecure,
-                                       UseTls = tls != null && (JBool(tls, "enabled") || reality) };
+                                       UseTls = tlsOn, HeaderType = headerType };
             string reason = null;
             switch (type)
             {
@@ -342,7 +379,7 @@ namespace CS_Ray.Core.Config
                     if (string.IsNullOrEmpty(p.Uuid)) return null;
                     // alter_id is ignored: the engine always speaks AEAD (as Xray's client, which has no alterId, does).
                     reason = reality ? "REALITY (VMess) — unsupported (VLESS only)"
-                           : TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet));
+                           : httpReason ?? TransportReason(rawNet) ?? LinkParser.VmessTransportReason(NetType(rawNet));
                     break;
                 case "vless":
                     p.Protocol = "vless"; p.Uuid = JStr(d, "uuid");
@@ -355,9 +392,9 @@ namespace CS_Ray.Core.Config
                     }
                     var utls = JObj(tls, "utls");
                     p.Fingerprint = utls != null ? JStr(utls, "fingerprint") : null;
-                    reason = reality ? RealityReason(p, rawNet, flow)
+                    reason = httpReason ?? (reality ? RealityReason(p, rawNet, flow)
                            : flow.Length > 0 ? VisionReason(p, rawNet, flow)
-                           : TransportReason(rawNet);
+                           : TransportReason(rawNet)) ?? LinkParser.HeaderComboReason(p);
                     break;
                 case "shadowsocks":
                     p.Protocol = "shadowsocks"; p.Network = "tcp"; p.SsMethod = JStr(d, "method"); p.Password = JStr(d, "password");
@@ -443,6 +480,19 @@ namespace CS_Ray.Core.Config
         private static string First(params string[] vals) { foreach (var v in vals) if (!string.IsNullOrEmpty(v)) return v; return ""; }
 
         private static string JStr(Dictionary<string, object> d, string k) => d != null && d.TryGetValue(k, out var v) && v != null ? v.ToString() : "";
+        // A value that may be a string or a list of strings: all of them, comma-joined.
+        private static string JList(Dictionary<string, object> d, string k)
+        {
+            if (d == null || !d.TryGetValue(k, out var v) || v == null) return "";
+            if (v is System.Collections.IEnumerable list && !(v is string) && !(v is System.Collections.IDictionary))
+            {
+                var items = new List<string>();
+                foreach (var x in list) if (x != null && x.ToString().Length > 0) items.Add(x.ToString());
+                return string.Join(",", items);
+            }
+            return v.ToString();
+        }
+
         // A value that may be a string or a list of strings (sing-box header values): the first one.
         private static string JFirst(Dictionary<string, object> d, string k)
         {

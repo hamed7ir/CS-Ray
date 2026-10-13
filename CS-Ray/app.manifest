@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="CS-Ray.app" type="win32" />
+  <assemblyIdentity version="2.0.0.0" name="CS-Ray.app" type="win32" />
 
   <!-- ON-DEMAND ELEVATION: run as asInvoker so normal launches (and the HKCU Run-key login auto-start) run
        un-elevated with NO UAC prompt. System-proxy mode needs no admin at all; TUN / full-tunnel is the ONLY path

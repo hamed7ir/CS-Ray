@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -14,9 +15,10 @@ namespace CS_Ray.Core.Transport
     /// strips the server's fake HTTP response header, and everything after is the raw protocol stream. Wraps whatever
     /// is underneath (plain TCP, or TLS — Xray applies the header inside TLS too).
     ///
-    /// The server only checks the request PATH (it must be one of its configured paths) — a mismatch, or a stream that
-    /// isn't an HTTP request at all, gets Xray's fixed "400 Bad Request" + close. Host / User-Agent / the rest are
-    /// camouflage; when the link carries no host, Xray's own defaults are used.
+    /// The server only checks the request PATH (it must be one of its configured paths): a mismatch gets "404 Not Found"
+    /// + close; a stream that isn't an HTTP request, or a connection it closes before having answered (e.g. the target
+    /// never replied), gets "400 Bad Request". Host / User-Agent / the rest are camouflage; when the link carries no
+    /// host, Xray's own defaults are used.
     /// </summary>
     public sealed class HttpHeaderTransport : ITransport
     {
@@ -149,7 +151,16 @@ namespace CS_Ray.Core.Transport
             int len = 0;
             while (true)
             {
-                int n = await _inner.ReadAsync(acc, len, acc.Length - len, ct).ConfigureAwait(false);
+                int n;
+                try { n = await _inner.ReadAsync(acc, len, acc.Length - len, ct).ConfigureAwait(false); }
+                catch (IOException ex) when (len == 0 && ex.InnerException is SocketException se
+                                             && (se.SocketErrorCode == SocketError.ConnectionReset || se.SocketErrorCode == SocketError.ConnectionAborted))
+                {
+                    // Xray answers a path it doesn't list with 404 and closes. If our next write lands after that
+                    // close, the reset makes Windows drop the 404 we had already received, so say what it usually means.
+                    throw new IOException("HTTP header camouflage: the server dropped the connection before answering. "
+                        + "With Xray that usually means the request path isn't one it lists (check the path).", ex);
+                }
                 if (n <= 0)
                 {
                     if (len == 0) { _responseParsed = true; return; }   // closed before replying → EOF to the caller
@@ -164,8 +175,12 @@ namespace CS_Ray.Core.Transport
                     if (!status.StartsWith("HTTP/1.", StringComparison.Ordinal))
                         throw new IOException("HTTP header camouflage: the server did not reply with an HTTP header (is headerType=http right?).");
                     string[] parts = status.Split(' ');
+                    if (parts.Length >= 2 && parts[1] == "404")   // Xray: the request path is not one of its paths
+                        throw new IOException("HTTP header camouflage: the server rejected the request path (" + status.Trim() + ") — check the path.");
+                    if (parts.Length >= 2 && parts[1] == "400")   // Xray writes 400 when it closes without having answered
+                        throw new IOException(Protocol.VlessProtocol.NoAnswerMessage + " (http header camouflage: " + status.Trim() + ")");
                     if (parts.Length >= 2 && parts[1].Length == 3 && (parts[1][0] == '4' || parts[1][0] == '5'))
-                        throw new IOException("HTTP header camouflage: the server rejected the request (" + status.Trim() + ") — check the path.");
+                        throw new IOException("HTTP header camouflage: the server rejected the request (" + status.Trim() + ").");
                     int body = end + Ending.Length;
                     if (len > body) { _left = acc; _leftOff = body; _leftLen = len - body; }
                     _responseParsed = true;

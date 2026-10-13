@@ -81,7 +81,7 @@ namespace CS_Ray.Core.Config
             switch (Protocol)
             {
                 case "vless":
-                    c.Uuid = Uuid;
+                    c.Uuid = Uuid?.Trim();
                     c.UseTls = UseTls;   // security=tls vs none (was never passed → every VLESS server was dialed with TLS)
                     c.HeaderType = TcpHeader();
                     c.Flow = CS_Ray.Core.Protocol.VlessProtocol.NormalizeFlow(Flow);
@@ -98,7 +98,8 @@ namespace CS_Ray.Core.Config
                         };
                     break;
                 case "vmess":
-                    c.VmessId = Uuid;
+                    c.VmessId = Uuid?.Trim();
+                    c.XhttpExtra = XhttpExtra;   // packet-up reads padding / headers / limits from it
                     c.UseTls = UseTls;   // the engine config defaults to TLS on; a plain VMess server must stay plain
                     c.HeaderType = TcpHeader();
                     c.VmessSecurity = string.IsNullOrEmpty(VmessSecurity) ? "auto" : VmessSecurity;

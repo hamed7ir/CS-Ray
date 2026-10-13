@@ -31,10 +31,10 @@ namespace CS_Ray.UI
             _name = MakeLabel("CS-Ray", FontHelper.Ui(17f, FontStyle.Bold));
             _ver = MakeLabel("version " + VersionString(), FontHelper.Ui(9f));
             _desc = MakeLabel(
-                "Pure-managed C# proxy client for legacy ARM32 Windows.\nVLESS · VMess · Shadowsocks · TUN full-tunnel · subscriptions.",
+                "A proxy client written only in C#, so it runs on old ARM32 Windows too.\nVLESS, VMess, Shadowsocks, REALITY, XHTTP, full tunnel and subscriptions.",
                 FontHelper.Ui(9f));
             _privacy = MakeLabel(
-                "This app collects ZERO data and sends nothing anywhere.\nNo telemetry, no analytics, no phone-home — it connects ONLY to the servers you add.",
+                "This app collects no data and sends nothing anywhere.\nNo telemetry, no analytics. It only connects to the servers you add.",
                 FontHelper.Ui(9f, FontStyle.Bold));
             _link = new LinkLabel
             {
@@ -42,7 +42,7 @@ namespace CS_Ray.UI
                 Font = FontHelper.Ui(9f), LinkBehavior = LinkBehavior.HoverUnderline
             };
             _link.LinkClicked += (s, e) => { try { Process.Start(RepoUrl); } catch { } };
-            _license = MakeLabel("Free & open-source (GPLv3) — audit it on GitHub. © 2026 Hamed.", FontHelper.Ui(8f));
+            _license = MakeLabel("Free and open source (GPLv3). All the code is on GitHub. © 2026 Hamed.", FontHelper.Ui(8f));
 
             foreach (Control c in new Control[] { _pic, _name, _ver, _desc, _privacy, _link, _license }) Body.Host.Controls.Add(c);
 
@@ -95,7 +95,7 @@ namespace CS_Ray.UI
         private static string VersionString()
         {
             try { var v = Assembly.GetExecutingAssembly().GetName().Version; return v.Major + "." + v.Minor + "." + v.Build; }
-            catch { return "1.1.0"; }
+            catch { return "2.0.0"; }
         }
     }
 }

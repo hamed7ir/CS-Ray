@@ -77,7 +77,7 @@ namespace CS_Ray.UI
         private ThemedTextBox _txtSubUrl;
         private Button _btnAddSub;
         private ListBox _listSubs;
-        private Button _btnSubUpdate, _btnSubDelete, _btnSubEdit;
+        private Button _btnSubUpdate, _btnSubDelete, _btnSubEdit, _btnSubShare;
 
         private bool _tunFullTunnel;
         private bool _tunRouting; // routes installed (distinct from adapter existence — adapter is kept alive)
@@ -318,6 +318,7 @@ namespace CS_Ray.UI
             _listSubs.DoubleClick += OnSubRowEdit;
             _btnSubUpdate = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Update", Width = 100, Height = 28 }; _btnSubUpdate.Click += OnSubRowUpdate;
             _btnSubEdit = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Edit…", Width = 100, Height = 28 }; _btnSubEdit.Click += OnSubRowEdit;
+            _btnSubShare = new RoundedButton { Kind = RoundedButtonKind.Secondary, Text = "Share…", Width = 100, Height = 28 }; _btnSubShare.Click += OnSubRowShare;
             _btnSubDelete = new RoundedButton { Kind = RoundedButtonKind.Danger, Text = "Delete", Width = 100, Height = 28 }; _btnSubDelete.Click += OnSubRowDelete;
         }
 
@@ -638,7 +639,7 @@ namespace CS_Ray.UI
             _listSubs.SetBounds(SetCardX, sy, cardW, DrawHelper.Px(232)); _listSubs.BorderStyle = BorderStyle.FixedSingle; s.Controls.Add(_listSubs);
             sy += _listSubs.Height + DrawHelper.Px(10);
             int bx = SetCardX;
-            foreach (var b in new[] { _btnSubUpdate, _btnSubEdit, _btnSubDelete })
+            foreach (var b in new[] { _btnSubUpdate, _btnSubEdit, _btnSubShare, _btnSubDelete })
             {
                 FitSetButton(b, bh, DrawHelper.Px(100));
                 b.Location = new Point(bx, sy); s.Controls.Add(b);
@@ -1181,6 +1182,7 @@ namespace CS_Ray.UI
             AddMenuItem(menu, "Set as active", () => SetActiveServer(p));
             AddMenuItem(menu, "Test", () => OnTestClick(this, EventArgs.Empty));
             AddMenuItem(menu, "Edit…", () => OnEditServerDoubleClick(this, EventArgs.Empty));
+            AddMenuItem(menu, "Share…", () => ShareServer(p));
             menu.Items.Add(new ToolStripSeparator());
             AddMenuItem(menu, "Remove", () => OnRemoveProfile(this, EventArgs.Empty));
             menu.Closed += (s, ev) => BeginInvoke((Action)menu.Dispose);
@@ -1589,6 +1591,31 @@ namespace CS_Ray.UI
             RenameSub(row.Sub);
         }
 
+        private void OnSubRowShare(object sender, EventArgs e)
+        {
+            var row = SelectedSubRow();
+            if (row == null) { Log("Select a subscription row to share."); return; }
+            ShareSub(row.Sub);
+        }
+
+        // ── Share: the link + a QR code. The link holds the secret, so it never goes to the log. ──
+        private void ShareServer(ProxyProfile p)
+        {
+            if (p == null) return;
+            string link = ShareLink.Build(p, out string reason);
+            using (var d = new ShareDialog("Share server", LabelOf(p), link, reason)) d.ShowDialog(this);
+        }
+
+        private void ShareSub(Subscription sub)
+        {
+            if (sub == null) return;
+            string url = (sub.Url ?? "").Trim();
+            string name = string.IsNullOrEmpty(sub.Name) ? DeriveSubName(url) : sub.Name;
+            using (var d = new ShareDialog("Share subscription", name, url.Length > 0 ? url : null, "This subscription has no URL.",
+                       "Anyone who has this link gets all the servers in this subscription. Only send it to people you trust."))
+                d.ShowDialog(this);
+        }
+
         // Repopulate the Subscriptions-tab list (name + URL + live server count).
         private void RefreshSubsList()
         {
@@ -1617,6 +1644,7 @@ namespace CS_Ray.UI
             var menu = new ThemedContextMenuStrip();
             AddMenuItem(menu, "⟳   Update this subscription", () => { var _ = UpdateOneSub(sub); });
             AddMenuItem(menu, "✎   Rename…", () => RenameSub(sub));
+            AddMenuItem(menu, "🔗   Share…", () => ShareSub(sub));
             menu.Items.Add(new ToolStripSeparator());
             AddMenuItem(menu, "🗑   Remove subscription", () => RemoveSub(sub));
             menu.Closed += (s, e) => BeginInvoke((Action)menu.Dispose);

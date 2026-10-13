@@ -189,7 +189,24 @@ namespace CS_Ray.Core.Config
             string m = (p.XhttpMode ?? "").Trim().ToLowerInvariant();
             bool auto = m.Length == 0 || m == "auto";
             if (p.Reality) return auto || m == "stream-one" ? null : "XHTTP mode '" + m + "' over REALITY — unsupported (stream-one only)";
-            return auto || m == "packet-up" ? null : "XHTTP mode '" + m + "' over TLS — not supported yet (packet-up only)";
+            if (!(auto || m == "packet-up")) return "XHTTP mode '" + m + "' over TLS — not supported yet (packet-up only)";
+            return PacketUpExtraReason(p.XhttpExtra);
+        }
+
+        /// <summary>packet-up carries the session id and seq in the URL path and the data in the POST body; extra settings
+        /// that move them elsewhere (Xray sessionIDPlacement / seqPlacement / uplinkDataPlacement) are not implemented.</summary>
+        internal static string PacketUpExtraReason(string extra)
+        {
+            if (string.IsNullOrWhiteSpace(extra)) return null;
+            Dictionary<string, object> x;
+            try { x = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(extra); } catch (Exception) { return null; }
+            if (x == null) return null;
+            string S(string k) => x.TryGetValue(k, out var v) && v != null ? Convert.ToString(v).Trim().ToLowerInvariant() : "";
+            foreach (var k in new[] { "sessionIDPlacement", "sessionPlacement", "seqPlacement" })
+                if (S(k).Length > 0 && S(k) != "path") return "XHTTP " + k + " '" + S(k) + "' — unsupported (path only)";
+            string up = S("uplinkDataPlacement");
+            if (up.Length > 0 && up != "body" && up != "auto") return "XHTTP uplinkDataPlacement '" + up + "' — unsupported (body only)";
+            return null;
         }
 
         /// <summary>VMess rides the same chain as VLESS — tcp (optional http header) or ws, TLS or not, and XHTTP

@@ -57,7 +57,7 @@ namespace CS_Ray.Core.Transport
                     return new Http2.XhttpStreamOneTransport(Http2.XhttpSettings.From(hostHeader, c.WsPath, c.XhttpExtra),
                                                              () => new Tls13.Tls13Transport(rc), key, pooled);
                 }
-                return new XhttpTransport(SniOrHost(c), c.AllowInsecure, c.WsPath, hostHeader, log);
+                return new XhttpTransport(SniOrHost(c), c.AllowInsecure, Http2.XhttpSettings.From(hostHeader, c.WsPath, c.XhttpExtra), log);
             }
             ITransport o = CreateVlessSecurity(c);
             if (net == "ws") return new WebSocketTransport(o, c.WsPath, hostHeader);

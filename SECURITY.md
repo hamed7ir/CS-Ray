@@ -1,37 +1,24 @@
-# Security Policy
+# Security
 
-## ⚠️ Read this first
+## Read this first
 
-CS-Ray is **alpha-quality censorship-circumvention software**, provided **with no warranty**
-(see [LICENSE](LICENSE)). It manipulates your machine's routing, DNS, and IPv6 configuration in
-TUN mode, and it carries your traffic to servers you configure.
+CS-Ray is free software made by one person, and it comes with no warranty (see [LICENSE](LICENSE)). In full tunnel mode it changes your routes, DNS and IPv6 settings, and it sends your traffic to the servers you add.
 
-**Do not rely on it where a leak or failure could put you at risk** without verifying its
-behavior yourself first. Review the source, build it yourself if you can, and use the in-app
-verbose log + a DNS/IP/WebRTC leak test to confirm it behaves as you expect in your setup. The
-managed-engine ceiling (no REALITY/uTLS/QUIC/etc., see the README) is a real limitation, not a
-bug.
+If a leak could put you in danger, don't just trust it. Test it in your own setup first. Turn on the verbose log, use a DNS / IP / WebRTC leak test site, and check that it does what you expect. If you can, read the code and build it yourself.
 
 ## Supported versions
 
-This is pre-1.0 software under active development. Only the latest commit on the default branch
-is supported; there are no maintained release branches yet.
+Only the latest release (2.0.0 right now) and the latest commit get fixes.
 
-## Reporting a vulnerability
+## Reporting a problem
 
-Please report security issues **privately** — do **not** open a public GitHub issue for a
-vulnerability, and do not disclose it publicly until it has been addressed.
+Please don't open a public issue for a security problem, and don't post about it anywhere until it's fixed.
 
-- **Preferred:** open a private report via GitHub **Security Advisories**
-  ("Report a vulnerability" on the repository's *Security* tab).
-- **Email:** hamedghrobani17@live.com
+- Best way: the "Report a vulnerability" button on the Security tab of the repo (a private GitHub advisory).
+- Or email: hamedghrobani17@live.com
 
-Please include: what you found, steps to reproduce, affected component/version (commit hash),
-and the potential impact (e.g. a DNS/IP leak, a TLS-validation bypass, a route/teardown flaw,
-RCE, etc.).
+Tell me what you found, how to reproduce it, which version or commit you used, and what can happen because of it. For example a DNS or IP leak, a TLS check that can be skipped, or routes that stay broken after you exit.
 
-You'll get an acknowledgement as soon as is practical. Because this protects users who may be
-at real risk, **leak and validation-bypass reports are taken seriously** even if they're not
-"classic" memory-safety bugs.
+I'll answer as soon as I can. Leaks and TLS validation problems matter a lot here, because people use this in places where they can get in real trouble. I take those seriously even when they're not the usual memory bugs.
 
-There is currently no bug-bounty program.
+There is no bug bounty.

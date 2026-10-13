@@ -38,7 +38,8 @@ namespace CS_Ray.Core.Protocol.Vmess
                 request.RequestBodyKey, request.RequestBodyIV,
                 respKey, respIV,
                 request.ResponseHeader,
-                log);
+                log,
+                request.Option);
         }
 
         private static byte[] Sha256First16(byte[] input)

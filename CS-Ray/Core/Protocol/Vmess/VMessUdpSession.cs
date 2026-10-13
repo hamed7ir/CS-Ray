@@ -15,7 +15,7 @@ namespace CS_Ray.Core.Protocol.Vmess
     /// </summary>
     public sealed class VMessUdpSession : IUdpOutbound
     {
-        private const int RecvBufSize = 8192; // VmessBodyStream MaxPayload — one ReadAsync returns one chunk/datagram
+        private const int RecvBufSize = 8192; // ≥ any server chunk payload — one ReadAsync returns one chunk/datagram
 
         private readonly VlessConfig _cfg;
         private readonly byte[] _uuid;
@@ -51,6 +51,8 @@ namespace CS_Ray.Core.Protocol.Vmess
 
         public async Task SendAsync(byte[] payload, int offset, int count, CancellationToken ct)
         {
+            // One datagram must be one chunk: a larger one would be split into several datagrams, so drop it (Xray does).
+            if (count > VmessBodyStream.MaxPayload) return;
             // count ≤ MTU < 8KB, so this writes exactly one VMess chunk = one datagram (WriteAsync also flushes).
             await _body.WriteAsync(payload, offset, count, ct).ConfigureAwait(false);
         }

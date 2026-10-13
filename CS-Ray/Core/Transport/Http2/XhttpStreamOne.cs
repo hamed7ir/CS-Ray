@@ -12,8 +12,8 @@ using Org.BouncyCastle.Security;
 namespace CS_Ray.Core.Transport.Http2
 {
     /// <summary>
-    /// XHTTP settings for mode stream-one, from the share link's host / path / mode / extra (Xray-core
-    /// transport/internet/splithttp + infra/conf). Only the fields that matter for stream-one are honoured.
+    /// XHTTP settings from the share link's host / path / mode / extra (Xray-core transport/internet/splithttp +
+    /// infra/conf), for stream-one (h2, REALITY) and packet-up (HTTP/1.1, TLS) alike.
     /// </summary>
     public sealed class XhttpSettings
     {
@@ -31,6 +31,8 @@ namespace CS_Ray.Core.Transport.Http2
         public int ConnFrom = 3, ConnTo = 3, ConcFrom, ConcTo;   // maxConnections / maxConcurrency ranges (rolled once per pool)
         public int ReqFrom = 600, ReqTo = 900, SecsFrom = 1800, SecsTo = 3000;
         public int ReuseFrom, ReuseTo;      // cMaxReuseTimes (0 = unlimited)
+        // packet-up uplink: the most a POST may carry, and the least time between two POSTs (Xray defaults).
+        public int MaxPostFrom = 1000000, MaxPostTo = 1000000, MinIntervalFrom = 30, MinIntervalTo = 30;
 
         /// <summary>Builds settings from the link fields. `extra` is the raw JSON (null/empty ok); unknown fields are ignored.</summary>
         public static XhttpSettings From(string host, string path, string extraJson)
@@ -57,6 +59,8 @@ namespace CS_Ray.Core.Transport.Http2
             s.Path = p;
             if (x.Count == 0) return s;
             if (Get(x, "noGRPCHeader") is bool ng) s.NoGrpcHeader = ng;
+            if (Range(Get(x, "scMaxEachPostBytes"), out int mpf, out int mpt) && mpt > 0) { s.MaxPostFrom = mpf; s.MaxPostTo = mpt; }
+            if (Range(Get(x, "scMinPostsIntervalMs"), out int mif, out int mit) && mit >= 0) { s.MinIntervalFrom = mif; s.MinIntervalTo = mit; }
             if (Get(x, "uplinkHTTPMethod") is string m && m.Length > 0) s.Method = m.ToUpperInvariant();
             if (Range(Get(x, "xPaddingBytes"), out int pf, out int pt) && pt > 0) { s.PaddingFrom = pf; s.PaddingTo = pt; }
             if (Get(x, "xPaddingObfsMode") is bool obfs && obfs)
@@ -82,11 +86,78 @@ namespace CS_Ray.Core.Transport.Http2
             return s;
         }
 
+        /// <summary>The Host as Go writes it (httpguts.PunycodeHostPort → idna.ToASCII, the Punycode profile): every
+        /// non-ASCII label becomes "xn--" + RFC 3492 Punycode, with no case folding or IDNA mapping (so "straße" stays
+        /// "xn--strae-oqa", not "strasse").</summary>
         internal static string AsciiHost(string h)
         {
             h = (h ?? "").Trim();
-            foreach (char c in h) if (c > 127) { try { return new IdnMapping().GetAscii(h); } catch { break; } }
-            return h;
+            bool ascii = true;
+            foreach (char c in h) if (c > 127) { ascii = false; break; }
+            if (ascii) return h;
+            var labels = h.Split('.');
+            for (int i = 0; i < labels.Length; i++)
+            {
+                bool plain = true;
+                foreach (char c in labels[i]) if (c > 127) { plain = false; break; }
+                if (!plain) labels[i] = "xn--" + Punycode(labels[i]);
+            }
+            return string.Join(".", labels);
+        }
+
+        // RFC 3492 Punycode of one label.
+        internal static string Punycode(string label)
+        {
+            const int Base = 36, TMin = 1, TMax = 26;
+            var cps = new List<int>();
+            for (int i = 0; i < label.Length; i++)
+            {
+                if (char.IsHighSurrogate(label[i]) && i + 1 < label.Length && char.IsLowSurrogate(label[i + 1])) { cps.Add(char.ConvertToUtf32(label[i], label[i + 1])); i++; }
+                else cps.Add(label[i]);
+            }
+            var o = new StringBuilder();
+            foreach (int cp in cps) if (cp < 0x80) o.Append((char)cp);
+            int b = o.Length, h = b;
+            if (b > 0) o.Append('-');
+            int n = 128, delta = 0, bias = 72;
+            while (h < cps.Count)
+            {
+                int m = int.MaxValue;
+                foreach (int cp in cps) if (cp >= n && cp < m) m = cp;
+                delta += (m - n) * (h + 1);
+                n = m;
+                foreach (int cp in cps)
+                {
+                    if (cp < n) delta++;
+                    if (cp != n) continue;
+                    int q = delta;
+                    for (int k = Base; ; k += Base)
+                    {
+                        int t = k <= bias ? TMin : k >= bias + TMax ? TMax : k - bias;
+                        if (q < t) break;
+                        o.Append(PunyDigit(t + (q - t) % (Base - t)));
+                        q = (q - t) / (Base - t);
+                    }
+                    o.Append(PunyDigit(q));
+                    bias = PunyAdapt(delta, h + 1, h == b);
+                    delta = 0;
+                    h++;
+                }
+                delta++;
+                n++;
+            }
+            return o.ToString();
+        }
+
+        private static char PunyDigit(int d) => (char)(d < 26 ? 'a' + d : '0' + d - 26);
+
+        private static int PunyAdapt(int delta, int numPoints, bool first)
+        {
+            delta = first ? delta / 700 : delta / 2;
+            delta += delta / numPoints;
+            int k = 0;
+            while (delta > ((36 - 1) * 26) / 2) { delta /= 36 - 1; k += 36; }
+            return k + (36 - 1 + 1) * delta / (delta + 38);
         }
 
         private static object Get(Dictionary<string, object> d, string k) => d.TryGetValue(k, out var v) ? v : null;
@@ -138,10 +209,7 @@ namespace CS_Ray.Core.Transport.Http2
         {
             string escaped = EscapePath(Path);
             string pad = MakePadding();
-            string query = Query;
-            // Classic mode: the padding goes in the Referer (Xray v25.1.30+) AND in the URL query (what servers up to
-            // v25.1.1 read): new servers prefer the Referer, old ones the query, every version accepts the pair.
-            if (!PadObfs || PadPlacement == "query") query = (query.Length > 0 ? query + "&" : "") + (PadObfs ? PadKey : "x_padding") + "=" + pad;
+            string query = QueryWithPadding(pad);
             var h = new List<HeaderField>
             {
                 // Go's x/net/http2 pseudo-header order
@@ -151,45 +219,90 @@ namespace CS_Ray.Core.Transport.Http2
                 new HeaderField(":scheme", "https"),
             };
             SentPath = h[2].Value;
-            // Xray: the user's extra.headers first, the "fetch" masquerade only fills what's missing (and is skipped for a
-            // custom User-Agent), then padding and Content-Type are SET (overriding a user Referer/Content-Type).
+            var regular = RegularHeaders(escaped, pad, grpcContentType: true);
+            foreach (var kv in regular)
+                if (!(kv.Key == "user-agent" && kv.Value.Length == 0)) h.Add(new HeaderField(kv.Key, kv.Value));   // an explicit empty UA sends none
+            // Go's x/net/http2 then adds accept-encoding (when the request has none) and a default UA (when none was set).
+            if (!regular.Any(kv => kv.Key == "accept-encoding")) h.Add(new HeaderField("accept-encoding", "gzip"));
+            if (!regular.Any(kv => kv.Key == "user-agent")) h.Add(new HeaderField("user-agent", "Go-http-client/2.0"));
+            return h;
+        }
+
+        /// <summary>The configured query plus, in classic mode (or obfs "query" placement), the padding: classic mode puts it
+        /// in the Referer (Xray v25.1.30+) AND the URL query (what servers up to v25.1.1 read) — every version accepts the
+        /// pair.</summary>
+        internal string QueryWithPadding(string pad)
+        {
+            string query = Query;
+            if (!PadObfs || PadPlacement == "query") query = (query.Length > 0 ? query + "&" : "") + (PadObfs ? PadKey : "x_padding") + "=" + pad;
+            return query;
+        }
+
+        /// <summary>
+        /// The non-pseudo request headers (lowercase names), as Xray's GetRequestHeader builds them: the user's
+        /// extra.headers, then the "fetch" masquerade of TryDefaultHeadersWith — the browser profile is chosen by the
+        /// User-Agent: none or exactly "chrome", "edge", "firefox", "safari" (browser headers that OVERRIDE the identity
+        /// headers and only FILL Priority / Cache-Control / Pragma / Accept), "curl" (its UA only), "golang" (no UA: Go's
+        /// default); any other value is sent as it is, with no masquerade (an empty one sends no UA at all) — then the
+        /// padding. <paramref name="grpcContentType"/>: the streaming POST of stream-one / stream-up also gets Content-Type.
+        /// </summary>
+        internal List<KeyValuePair<string, string>> RegularHeaders(string escapedBase, string pad, bool grpcContentType)
+        {
             var regular = new List<KeyValuePair<string, string>>();
             Action<string, string> set = (n, v) => { regular.RemoveAll(kv => kv.Key == n); regular.Add(new KeyValuePair<string, string>(n, v)); };
             Action<string, string> fill = (n, v) => { if (!regular.Any(kv => kv.Key == n)) regular.Add(new KeyValuePair<string, string>(n, v)); };
             foreach (var kv in Headers)
-                if (!(kv.Key == "user-agent" && IsUaKeyword(kv.Value)) && !kv.Key.StartsWith(":")) set(kv.Key, kv.Value);
-            bool customUa = regular.Any(kv => kv.Key == "user-agent");
-            if (!customUa)
+                if (!kv.Key.StartsWith(":")) set(kv.Key, kv.Value);
+            var ua = regular.Where(kv => kv.Key == "user-agent").Select(kv => kv.Value).FirstOrDefault();
+            string profile = ua == null ? "chrome" : ua;   // Xray matches the keyword exactly (case-sensitive, untrimmed)
+            switch (profile)
             {
-                fill("sec-ch-ua", BrowserHeaders.ChromeSecChUa);
-                fill("sec-ch-ua-mobile", "?0");
-                fill("sec-ch-ua-platform", "\"Windows\"");
-                fill("dnt", "1");
-                fill("user-agent", BrowserHeaders.ChromeUserAgent);
-                fill("accept-language", "en-US,en;q=0.9");
-                fill("sec-fetch-mode", "cors");
-                fill("sec-fetch-dest", "empty");
-                fill("sec-fetch-site", "same-origin");
-                fill("priority", "u=1, i");
-                fill("cache-control", "no-cache");
-                fill("pragma", "no-cache");
-                fill("accept", "*/*");
+                case "chrome":
+                case "edge":
+                    bool edge = profile == "edge";
+                    set("sec-ch-ua", edge ? BrowserHeaders.EdgeSecChUa : BrowserHeaders.ChromeSecChUa);
+                    set("sec-ch-ua-mobile", "?0");
+                    set("sec-ch-ua-platform", "\"Windows\"");
+                    set("dnt", "1");
+                    set("user-agent", edge ? BrowserHeaders.EdgeUserAgent : BrowserHeaders.ChromeUserAgent);
+                    set("accept-language", "en-US,en;q=0.9");
+                    Fetch(set, fill, "u=1, i");
+                    break;
+                case "firefox":
+                    set("user-agent", BrowserHeaders.FirefoxUserAgent);
+                    set("dnt", "1");
+                    set("accept-language", "en-US,en;q=0.5");
+                    Fetch(set, fill, "u=4");
+                    break;
+                case "safari":
+                    set("user-agent", BrowserHeaders.SafariUserAgent);
+                    set("accept-language", "en-US,en;q=0.9");
+                    Fetch(set, fill, "u=3, i");
+                    break;
+                case "golang":
+                    regular.RemoveAll(kv => kv.Key == "user-agent");   // Go's own default UA, no other headers
+                    break;
+                case "curl":
+                    set("user-agent", BrowserHeaders.CurlUserAgent);
+                    break;
             }
-            if (!PadObfs) set("referer", "https://" + Host + escaped + "?x_padding=" + pad);
+            if (!PadObfs) set("referer", "https://" + Host + escapedBase + "?x_padding=" + pad);
             else
             {
                 string ph = PadHeader.ToLowerInvariant();
                 switch (PadPlacement)
                 {
-                    case "cookie": set("cookie", PadKey + "=" + pad); break;
+                    case "cookie":   // Go's AddCookie: appended to a Cookie header the user set
+                        string have = regular.Where(kv => kv.Key == "cookie").Select(kv => kv.Value).FirstOrDefault();
+                        set("cookie", string.IsNullOrEmpty(have) ? PadKey + "=" + pad : have + "; " + PadKey + "=" + pad);
+                        break;
                     case "header": set(ph, pad); break;
-                    case "query": break;   // already in :path
-                    default: set(ph, "https://" + Host + escaped + "?" + PadKey + "=" + pad); break;   // queryInHeader
+                    case "query": break;   // already in the URL query
+                    default: set(ph, "https://" + Host + escapedBase + "?" + PadKey + "=" + pad); break;   // queryInHeader
                 }
             }
-            if (!NoGrpcHeader) set("content-type", "application/grpc");
-            foreach (var kv in regular) h.Add(new HeaderField(kv.Key, kv.Value));
-            return h;
+            if (grpcContentType && !NoGrpcHeader) set("content-type", "application/grpc");
+            return regular;
         }
 
         /// <summary>The :path of the last request built (diagnostics for 404/400 answers).</summary>
@@ -199,7 +312,7 @@ namespace CS_Ray.Core.Transport.Http2
 
         // Length in [from, to) like Xray's RandBetween. repeat-x = 'X'*n; tokenish = random base62 whose HPACK-Huffman
         // length reaches the target (the server checks the Huffman length within ±2 for tokenish).
-        private string MakePadding()
+        internal string MakePadding()
         {
             int target = PaddingFrom + Rnd(Math.Max(1, PaddingTo - PaddingFrom));
             if (!PadObfs || PadMethod != "tokenish") return new string('X', target);
@@ -208,13 +321,16 @@ namespace CS_Ray.Core.Transport.Http2
             return sb.ToString();
         }
 
-        private static bool IsUaKeyword(string ua)
+        // The "fetch" variant: Sec-Fetch-* set, the rest only when absent.
+        private static void Fetch(Action<string, string> set, Action<string, string> fill, string priority)
         {
-            switch ((ua ?? "").Trim().ToLowerInvariant())
-            {
-                case "": case "chrome": case "firefox": case "safari": case "edge": case "curl": case "golang": return true;
-                default: return false;
-            }
+            set("sec-fetch-mode", "cors");
+            set("sec-fetch-dest", "empty");
+            set("sec-fetch-site", "same-origin");
+            fill("priority", priority);
+            fill("cache-control", "no-cache");
+            fill("pragma", "no-cache");
+            fill("accept", "*/*");
         }
     }
 

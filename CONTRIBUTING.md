@@ -1,60 +1,40 @@
-# Contributing to CS-Ray
+# Contributing
 
-Thanks for your interest. CS-Ray is a pure-managed proxy client for **legacy ARM32 Windows**,
-and that constraint shapes everything below. Please read before opening a PR.
+Thanks for wanting to help. Please read this first, it saves time for both of us.
 
 ## Build
 
-- **Visual Studio 2017** (or MSBuild 15 / the .NET Framework 4.7 targeting pack).
-- Restore, then build:
-  ```powershell
-  nuget restore CS-Ray.sln
-  msbuild CS-Ray.sln /t:Build /p:Configuration=Debug
-  ```
-- Project is .NET Framework **4.7**, **C# 7.3**, WinForms, **AnyCPU + Prefer32Bit**.
-- TUN mode needs the `wintun/<arch>/wintun.dll` folder beside the built `CS-Ray.exe`. The app runs
-  **un-elevated** (`asInvoker`); starting TUN triggers a UAC prompt and self-relaunches elevated, so don't
-  pre-launch as admin — just click **Start TUN** and accept the prompt.
+- Visual Studio 2017 or newer, or MSBuild 15+ with the .NET Framework 4.7 targeting pack.
+- `nuget restore CS-Ray.sln`, then build `CS-Ray.sln` (Debug or Release).
+- The project is .NET Framework 4.7, C# 7.3, WinForms, AnyCPU with Prefer32Bit. Please don't change that. It's what lets one exe run on ARM32 too.
+- For the full tunnel, the `wintun\<arch>\wintun.dll` folders have to be next to `CS-Ray.exe`. Don't start the app as admin yourself, it asks for UAC when you start the full tunnel.
 
-## Working discipline
+## How I work on it
 
-This project is built in **small, verifiable steps** — please follow the same rhythm:
+- One thing at a time. Small PRs are easier to review and easier to undo.
+- It has to build with no errors and no warnings.
+- Close the app before you rebuild, it locks the exe. When you test the full tunnel, exit from the tray icon. If you kill it, the Wintun adapter can get stuck until you reboot.
+- There are self tests in the code (`LinkParserSelfTest`, `VmessSelfTest`). Keep them passing, and add a test when you fix a parser or protocol bug.
+- Tell me what you tested, and what you couldn't test.
 
-- **One thing at a time.** Keep each change focused; small PRs review faster and bisect cleanly.
-- **Build clean after every step.** Don't submit a PR that doesn't compile, and prefer changes
-  you've actually run.
-- **Close the running app before rebuilding** (it locks the exe). For TUN testing, **Exit from
-  the tray** (graceful teardown) rather than force-killing — a hard kill can wedge the Wintun
-  driver state (`CreateAdapter` error 2) until reboot.
-- Note what you tested. If you couldn't test a path, say so.
+## What fits and what doesn't
 
-## The managed-engine ceiling (please don't fight it)
+Everything has to be managed .NET code that runs on ARM32. That is the one hard rule.
 
-CS-Ray uses .NET's managed `SslStream` and a from-scratch managed netstack. That is **why it
-runs on ARM32 at all**, and it means some features are permanently out of scope here:
+- No native cores and no new native DLLs. The only native file is wintun.dll, and it's only used through its public API.
+- Crypto stays in Bouncy Castle or .NET.
+- Anything built on QUIC (Hysteria, TUIC, HTTP/3) is out for now, because there is no managed QUIC stack here.
 
-- **Will not be accepted:** REALITY, uTLS / TLS fingerprint impersonation, XTLS flow, ECH,
-  QUIC / HTTP/3, Hysteria/Hysteria2, TUIC, or anything that requires a native core, a custom
-  TLS record layer, or a QUIC stack.
-- Servers using those are intentionally **imported but marked "unsupported"** — improving how
-  that is detected/surfaced is welcome; making them *connect* is not feasible and won't be merged.
-- **No new native dependencies.** Everything must JIT to ARM32. The only native artifact is the
-  Wintun DLL (used solely via its public `wintun.h` API). Crypto stays pure-managed
-  (Bouncy Castle).
-
-Good contributions: new **managed** transports/protocols that fit the ceiling, bug fixes, leak
-hardening, UI/touch/accessibility, subscription-format parsers, docs, and testing on real ARM32 /
-RT 8.1 hardware.
+Things that are welcome: Trojan (it's doable with the TLS code that's already here), gRPC, HTTP/2 for XHTTP over TLS, bug fixes, better subscription parsing, UI and touch fixes, and testing on real Windows RT devices.
 
 ## Code style
 
-- Match the surrounding code — naming, brace style, comment density. Don't reformat unrelated code.
-- C# 7.3 only (no newer language features). Keep it WinForms-idiomatic.
-- **Crypto/random:** use `RNGCryptoServiceProvider`, never `System.Random`.
-- **DPI:** rely on system-DPI awareness + `AutoScaleMode.Font`; no manual DPI math.
-- Reference files/lines precisely in PR descriptions, and explain *why*, not just *what*.
+- Write like the code around it. Same naming, same kind of comments. Don't reformat code you didn't change.
+- C# 7.3 only.
+- For anything random that matters (keys, nonces, padding) use `RNGCryptoServiceProvider` or Bouncy Castle's `SecureRandom`, never `System.Random`.
+- Don't add your own DPI math. Use the helpers that are already there (`DrawHelper.Px` and the font scaling).
+- When something has to behave like Xray, write in a comment which Xray file it follows.
 
-## Licensing of contributions
+## License
 
-By submitting a contribution you agree it is licensed under the project's **GPL-3.0-only**
-license (see [LICENSE](LICENSE)). Don't paste third-party code under an incompatible license.
+Anything you send is under the same GPL-3.0 license as the project (see [LICENSE](LICENSE)). Please don't paste in code under a license that doesn't fit.

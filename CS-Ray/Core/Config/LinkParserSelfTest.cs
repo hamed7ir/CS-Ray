@@ -226,7 +226,66 @@ namespace CS_Ray.Core.Config
             // Browser masquerade + Go-shaped ws request target / Host (review round).
             {
                 Check("Sec-CH-UA: Chrome 124 matches the real browser", Transport.BrowserHeaders.SecChUa(124) == "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"", Transport.BrowserHeaders.SecChUa(124));
-                Check("Sec-CH-UA: Chrome 147 order", Transport.BrowserHeaders.ChromeSecChUa == "\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\"", Transport.BrowserHeaders.ChromeSecChUa);
+                Check("Sec-CH-UA: 147..150 (Xray's GREASE)", Transport.BrowserHeaders.SecChUa(147) == "\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\""
+                      && Transport.BrowserHeaders.SecChUa(148) == "\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\""
+                      && Transport.BrowserHeaders.SecChUa(149) == "\"Google Chrome\";v=\"149\", \"Chromium\";v=\"149\", \"Not)A;Brand\";v=\"24\""
+                      && Transport.BrowserHeaders.SecChUa(150) == "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\"", Transport.BrowserHeaders.SecChUa(150));
+                var d1012 = new DateTime(2026, 10, 12, 12, 0, 0, DateTimeKind.Utc); var d1019 = new DateTime(2026, 10, 19, 12, 0, 0, DateTimeKind.Utc);
+                Check("Chrome major by date (Xray formula)", Transport.BrowserHeaders.ChromeVersionFor(d1012, 0) == 150 && Transport.BrowserHeaders.ChromeVersionFor(d1012, 0.9999) == 147
+                      && Transport.BrowserHeaders.ChromeVersionFor(d1019, 0.9999) == 148, "" + Transport.BrowserHeaders.ChromeVersionFor(d1012, 0) + "/" + Transport.BrowserHeaders.ChromeVersionFor(d1012, 0.9999));
+                Check("Chrome major: a clock before 2026 reads as the anchor", Transport.BrowserHeaders.ChromeVersionFor(new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), 0.9999) == 141, "" + Transport.BrowserHeaders.ChromeVersionFor(new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc), 0.9999));
+                Check("Firefox / curl versions by date", Transport.BrowserHeaders.FirefoxVersionFor(new DateTime(2026, 10, 12, 0, 0, 0, DateTimeKind.Utc), 0) == 128 + (805 - 25) / 30
+                      && Transport.BrowserHeaders.CurlVersionFor(new DateTime(2026, 10, 12, 0, 0, 0, DateTimeKind.Utc), 0) == "8." + (1302 - 60) / 57 + ".0",
+                      Transport.BrowserHeaders.FirefoxVersionFor(new DateTime(2026, 10, 12, 0, 0, 0, DateTimeKind.Utc), 0) + " / " + Transport.BrowserHeaders.CurlVersionFor(new DateTime(2026, 10, 12, 0, 0, 0, DateTimeKind.Utc), 0));
+                Check("Safari version by date", Transport.BrowserHeaders.SafariVersionFor(new DateTime(2026, 10, 12, 0, 0, 0, DateTimeKind.Utc), 0) == "27.0"
+                      && Transport.BrowserHeaders.SafariVersionFor(new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc), 0) == "26.6",
+                      Transport.BrowserHeaders.SafariVersionFor(new DateTime(2026, 10, 12, 0, 0, 0, DateTimeKind.Utc), 0) + " / " + Transport.BrowserHeaders.SafariVersionFor(new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc), 0));
+                Check("Punycode (RFC 3492 samples)", Transport.Http2.XhttpSettings.Punycode("bücher") == "bcher-kva" && Transport.Http2.XhttpSettings.Punycode("münchen") == "mnchen-3ya"
+                      && Transport.Http2.XhttpSettings.Punycode("他们为什么不说中文") == "ihqwcrb4cv8a8dqg056pqjye", Transport.Http2.XhttpSettings.Punycode("münchen"));
+                Check("Host IDN like Go (no IDNA mapping)", Transport.Http2.XhttpSettings.AsciiHost("straße.de") == "xn--strae-oqa.de" && Transport.Http2.XhttpSettings.AsciiHost("a.example") == "a.example",
+                      Transport.Http2.XhttpSettings.AsciiHost("straße.de"));
+                Check("UA and Sec-CH-UA agree on the version", Transport.BrowserHeaders.ChromeUserAgent.Contains("Chrome/" + Transport.BrowserHeaders.ChromeMajor + ".0.0.0")
+                      && Transport.BrowserHeaders.ChromeSecChUa == Transport.BrowserHeaders.SecChUa(Transport.BrowserHeaders.ChromeMajor), Transport.BrowserHeaders.ChromeUserAgent);
+                {
+                    // XHTTP packet-up request heads, shaped like Go's net/http writes Xray's.
+                    var xt = new Transport.XhttpTransport("h.example", false, Transport.Http2.XhttpSettings.From("h.example", "/xh?ed=2048", null));
+                    var get = xt.BuildHead("GET", "S", -1).Split(new[] { "\r\n" }, StringSplitOptions.None);
+                    var post = xt.BuildHead("POST", "S/0", 44).Split(new[] { "\r\n" }, StringSplitOptions.None);
+                    string Names(string[] l) => string.Join(",", l.Skip(1).Where(x => x.Length > 0).Select(x => x.Substring(0, x.IndexOf(':'))));
+                    string sorted = "Accept,Accept-Language,Cache-Control,DNT,Pragma,Priority,Referer,Sec-CH-UA,Sec-CH-UA-Mobile,Sec-CH-UA-Platform,Sec-Fetch-Dest,Sec-Fetch-Mode,Sec-Fetch-Site";
+                    Check("XHTTP GET line: base/sid?query&padding", get[0].StartsWith("GET /xh/S?ed=2048&x_padding=X") && get[0].EndsWith(" HTTP/1.1"), get[0].Substring(0, Math.Min(60, get[0].Length)));
+                    Check("XHTTP GET header order", Names(get) == "Host,User-Agent," + sorted + ",Accept-Encoding,Connection", Names(get));
+                    Check("XHTTP POST line + header order", post[0].StartsWith("POST /xh/S/0?ed=2048&x_padding=X") && Names(post) == "Host,User-Agent,Content-Length," + sorted, Names(post));
+                    string referer = get.First(x => x.StartsWith("Referer: ")).Substring(9);
+                    Check("XHTTP Referer: base path, X padding", referer.StartsWith("https://h.example/xh/?x_padding=XXX") && !referer.Contains("/S"), referer.Substring(0, 40));
+                    var cu = new Transport.XhttpTransport("h.example", false, Transport.Http2.XhttpSettings.From("h.example", "/xh", "{\"headers\":{\"User-Agent\":\"MyAgent/1\",\"x-custom\":\"v\"},\"xPaddingBytes\":\"10-11\"}"));
+                    var cuh = cu.BuildHead("POST", "S/1", 3);
+                    Check("XHTTP extra: custom UA skips the masquerade, custom header kept, padding range", cuh.Contains("User-Agent: MyAgent/1") && !cuh.Contains("Sec-CH-UA") && cuh.Contains("X-Custom: v") && cuh.Contains("x_padding=XXXXXXXXXX ") ,
+                          cuh.Split(new[] { "\r\n" }, StringSplitOptions.None)[0]);
+                    string Head(string extra, string method = "POST", int len = 3)
+                        => new Transport.XhttpTransport("h.example", false, Transport.Http2.XhttpSettings.From("h.example", "/xh", extra)).BuildHead(method, "S/1", len);
+                    var ff = Head("{\"headers\":{\"User-Agent\":\"firefox\"}}");
+                    Check("XHTTP UA keyword firefox → Firefox profile", ff.Contains("User-Agent: " + Transport.BrowserHeaders.FirefoxUserAgent) && ff.Contains("Priority: u=4")
+                          && ff.Contains("Accept-Language: en-US,en;q=0.5") && !ff.Contains("Sec-CH-UA"), Transport.BrowserHeaders.FirefoxUserAgent);
+                    var ed = Head("{\"headers\":{\"User-Agent\":\"edge\"}}");
+                    Check("XHTTP UA keyword edge → Edge UA + brand", ed.Contains("Edg/" + Transport.BrowserHeaders.ChromeMajor + ".0.0.0") && ed.Contains("\"Microsoft Edge\";v=\"" + Transport.BrowserHeaders.ChromeMajor + "\""), Transport.BrowserHeaders.EdgeSecChUa);
+                    var sf = Head("{\"headers\":{\"User-Agent\":\"safari\"}}");
+                    Check("XHTTP UA keyword safari", sf.Contains("Version/") && sf.Contains("Safari/605.1.15") && sf.Contains("Priority: u=3, i") && !sf.Contains("DNT"), Transport.BrowserHeaders.SafariUserAgent);
+                    var go = Head("{\"headers\":{\"User-Agent\":\"golang\"}}");
+                    Check("XHTTP UA keyword golang → Go default, no masquerade", go.Contains("User-Agent: Go-http-client/1.1") && !go.Contains("Sec-Fetch"), "");
+                    var cl = Head("{\"headers\":{\"User-Agent\":\"curl\"}}");
+                    Check("XHTTP UA keyword curl → curl UA only", cl.Contains("User-Agent: curl/8.") && !cl.Contains("Sec-Fetch") && !cl.Contains("Accept-Language"), Transport.BrowserHeaders.CurlUserAgent);
+                    var cap = Head("{\"headers\":{\"User-Agent\":\"Chrome\"}}");
+                    Check("XHTTP UA keyword is exact (\"Chrome\" is a custom UA)", cap.Contains("User-Agent: Chrome\r\n") && !cap.Contains("Sec-Fetch"), "");
+                    var none = Head("{\"headers\":{\"User-Agent\":\"\"}}");
+                    Check("XHTTP empty UA → no User-Agent line", !none.Contains("User-Agent") && !none.Contains("Sec-Fetch"), "");
+                    var ck = Head("{\"headers\":{\"Cookie\":\"a=1\"},\"xPaddingObfsMode\":true,\"xPaddingPlacement\":\"cookie\",\"xPaddingBytes\":\"5-5\"}");
+                    Check("XHTTP cookie padding appends to the user's cookie", ck.Contains("Cookie: a=1; x_padding=XXXXX\r\n"), ck.Split(new[] { "\r\n" }, StringSplitOptions.None).FirstOrDefault(x => x.StartsWith("Cookie")) ?? "(none)");
+                    var ae = new Transport.XhttpTransport("h.example", false, Transport.Http2.XhttpSettings.From("h.example", "/xh", "{\"headers\":{\"Accept-Encoding\":\"identity\"}}")).BuildHead("GET", "S", -1);
+                    Check("XHTTP GET keeps the user's Accept-Encoding", ae.Contains("Accept-Encoding: identity") && !ae.Contains("Accept-Encoding: gzip"), "");
+                }
+                Unsupported(Check, "tag XHTTP packet-up sessionIDPlacement=header",
+                    LinkParser.Parse("vless://5d8a2b98-8129-4e5c-bc48-3f75e148d1a6@1.2.3.4:443?type=xhttp&security=tls&sni=a.com&path=%2Fx&extra=%7B%22sessionIDPlacement%22%3A%22header%22%7D#p"), "sessionIDPlacement");
                 string T(string x) => Transport.WebSocketTransport.RequestTarget(x);
                 Check("ws target: space escaped", T("/my ws") == "/my%20ws", T("/my ws"));
                 Check("ws target: UTF-8 escaped", T("/路径") == "/%E8%B7%AF%E5%BE%84", T("/路径"));
@@ -254,6 +313,22 @@ namespace CS_Ray.Core.Config
                       f3 == null ? "missing" : (f3.UnsupportedReason ?? "runnable?!"));
             }
             {
+                // HTTP camouflage from subscriptions: Clash network: http (block lists, TLS allowed) and sing-box http (no TLS only).
+                var hc = SubscriptionFetcher.Decode("proxies:\n  - name: h1\n    type: vmess\n    server: 1.2.3.4\n    port: 80\n    uuid: 5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\n    cipher: auto\n    network: http\n    http-opts:\n      method: \"GET\"\n      path:\n        - '/a'\n        - '/b'\n      headers:\n        Host:\n          - h1.com\n          - h2.com\n  - name: h2\n    type: vmess\n    server: 1.2.3.4\n    port: 443\n    uuid: 5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\n    cipher: auto\n    tls: true\n    network: http\n    http-opts: {path: [/c], headers: {Host: [h3.com]}}\n", null);
+                var h1 = hc.FirstOrDefault(x => x.Name == "h1"); var h2 = hc.FirstOrDefault(x => x.Name == "h2");
+                Check("Clash network http: block lists -> header camouflage", h1 != null && !h1.Unsupported && h1.Network == "tcp" && h1.HeaderType == "http" && h1.WsPath == "/a,/b" && h1.WsHost == "h1.com,h2.com" && !h1.UseTls,
+                      h1 == null ? "missing" : (h1.Unsupported ? h1.UnsupportedReason : "path=" + h1.WsPath + " host=" + h1.WsHost + " hdr=" + h1.HeaderType));
+                Check("Clash network http + tls (flow lists)", h2 != null && !h2.Unsupported && h2.HeaderType == "http" && h2.UseTls && h2.WsPath == "/c" && h2.WsHost == "h3.com",
+                      h2 == null ? "missing" : (h2.Unsupported ? h2.UnsupportedReason : "path=" + h2.WsPath + " host=" + h2.WsHost));
+                var sbx = SubscriptionFetcher.Decode("{\"outbounds\":[{\"type\":\"vmess\",\"tag\":\"sb1\",\"server\":\"1.2.3.4\",\"server_port\":80,\"uuid\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"transport\":{\"type\":\"http\",\"host\":[\"a.com\",\"b.com\"],\"path\":\"/x\"}},{\"type\":\"vmess\",\"tag\":\"sb2\",\"server\":\"1.2.3.4\",\"server_port\":80,\"uuid\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"transport\":{\"type\":\"http\",\"path\":\"/\",\"headers\":{\"Host\":\"h.com\"}}},{\"type\":\"vmess\",\"tag\":\"sb3\",\"server\":\"1.2.3.4\",\"server_port\":443,\"uuid\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"tls\":{\"enabled\":true,\"server_name\":\"s.com\"},\"transport\":{\"type\":\"http\",\"path\":\"/\"}},{\"type\":\"vmess\",\"tag\":\"sb4\",\"server\":\"1.2.3.4\",\"server_port\":80,\"uuid\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"transport\":{\"type\":\"http\",\"method\":\"PUT\"}},{\"type\":\"vmess\",\"tag\":\"sb5\",\"server\":\"9.9.9.9\",\"server_port\":80,\"uuid\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"transport\":{\"type\":\"http\"}}]}", null);
+                ProxyProfile Sb(string t) => sbx.FirstOrDefault(x => x.Name == t);
+                Check("sing-box http (no TLS): host list -> camouflage", Sb("sb1") != null && !Sb("sb1").Unsupported && Sb("sb1").HeaderType == "http" && Sb("sb1").WsHost == "a.com,b.com" && Sb("sb1").WsPath == "/x", Sb("sb1")?.UnsupportedReason ?? Sb("sb1")?.WsHost);
+                Check("sing-box http: headers.Host wins", Sb("sb2") != null && !Sb("sb2").Unsupported && Sb("sb2").WsHost == "h.com", Sb("sb2")?.UnsupportedReason ?? Sb("sb2")?.WsHost);
+                Check("sing-box http over TLS (h2) tagged", Sb("sb3") != null && Sb("sb3").Unsupported && (Sb("sb3").UnsupportedReason ?? "").Contains("HTTP/2"), Sb("sb3")?.UnsupportedReason);
+                Check("sing-box http method PUT tagged", Sb("sb4") != null && Sb("sb4").Unsupported && (Sb("sb4").UnsupportedReason ?? "").Contains("method"), Sb("sb4")?.UnsupportedReason);
+                Check("sing-box http without host: the server", Sb("sb5") != null && !Sb("sb5").Unsupported && Sb("sb5").WsHost == "9.9.9.9", Sb("sb5")?.UnsupportedReason ?? Sb("sb5")?.WsHost);
+            }
+            {
                 // vmess:// JSON: an object-valued extra stays JSON; 3x-ui's top-level downloadSettings is caught.
                 string Vx(string extra) => "vmess://" + B64("{\"add\":\"1.2.3.4\",\"port\":\"443\",\"id\":\"5d8a2b98-8129-4e5c-bc48-3f75e148d1a6\",\"net\":\"xhttp\",\"tls\":\"tls\",\"type\":\"auto\"" + extra + "}");
                 var top = LinkParser.Parse(Vx(",\"downloadSettings\":{\"address\":\"dl.example\"}"));
@@ -277,6 +352,28 @@ namespace CS_Ray.Core.Config
                     Check("migration: old xhttp import waits for a re-import", st.GetById("m2").Unsupported, "");
                 }
                 finally { try { System.IO.File.Delete(tmp); } catch { } }
+            }
+
+            // User ids: Xray's common/uuid ParseString (vectors from xray.exe 25.8.3).
+            {
+                string U(string s) { try { var b = Protocol.VlessProtocol.ParseUuid(s); var h = BitConverter.ToString(b).Replace("-", "").ToLowerInvariant(); return h.Substring(0, 8) + "-" + h.Substring(8, 4) + "-" + h.Substring(12, 4) + "-" + h.Substring(16, 4) + "-" + h.Substring(20); } catch (ArgumentException) { return "ERR"; } }
+                Check("id: custom 'a'", U("a") == "35b65f33-a679-5e76-af3c-273ea349ede4", U("a"));
+                Check("id: custom 'hello'", U("hello") == "b7502f40-1152-59f2-ba10-69aeed522cdf", U("hello"));
+                Check("id: custom is case-sensitive", U("Hello") == "5e36032f-fc05-5506-8dff-e29438639449", U("Hello"));
+                Check("id: custom 'CS-Ray test 123'", U("CS-Ray test 123") == "b6228814-1125-5db1-9878-07e774af2229", U("CS-Ray test 123"));
+                Check("id: custom 30 bytes", U("abcdefghijklmnopqrstuvwxyz0123") == "61c078af-a4a8-555a-bb12-ebed633003a8", U("abcdefghijklmnopqrstuvwxyz0123"));
+                Check("id: 30 hex chars are a custom id", U("5d8a2b9881294e5cbc483f75e148d1") == "05c92966-ee9c-5a02-aa8e-054a2ab52df1", U("5d8a2b9881294e5cbc483f75e148d1"));
+                Check("id: 15 x e-acute (30 bytes) custom", U(new string('\u00e9', 15)) == "67efdc25-3d57-587f-9fc0-a989ec80c9fa", U(new string('\u00e9', 15)));
+                Check("id: 16 x e-acute (32 bytes) rejected", U(new string('\u00e9', 16)) == "ERR", "");
+                Check("id: 31 bytes rejected", U("abcdefghijklmnopqrstuvwxyz01234") == "ERR", "");
+                Check("id: canonical upper/lower/no-dash", U("5D8A2B98-8129-4E5C-BC48-3F75E148D1A6") == "5d8a2b98-8129-4e5c-bc48-3f75e148d1a6" && U("5d8a2b9881294e5cbc483f75e148d1a6") == "5d8a2b98-8129-4e5c-bc48-3f75e148d1a6", "");
+                Check("id: Xray's dash/tail leniency", U("5d8a2b98-81294e5cbc483f75e148d1a6") == "5d8a2b98-8129-4e5c-bc48-3f75e148d1a6" && U("5d8a2b9881294e5cbc483f75e148d1a6ab") == "5d8a2b98-8129-4e5c-bc48-3f75e148d1a6", "");
+                Check("id: braces / urn / misplaced dash rejected", U("{5d8a2b98-8129-4e5c-bc48-3f75e148d1a6}") == "ERR" && U("urn:uuid:5d8a2b98-8129-4e5c-bc48-3f75e148d1a6") == "ERR" && U("5d8a2b981-129-4e5c-bc48-3f75e148d1a6") == "ERR", "");
+                Check("id: empty rejected", U("") == "ERR", "");
+                var pa = new ProxyProfile { Protocol = "vless", Server = "h", Port = 1, Uuid = "hello" };
+                var pb = new ProxyProfile { Protocol = "vless", Server = "h", Port = 1, Uuid = "b7502f40-1152-59f2-ba10-69aeed522cdf" };
+                var pc = new ProxyProfile { Protocol = "vless", Server = "h", Port = 1, Uuid = "Hello" };
+                Check("dedup: custom id == its mapped UUID, case matters", ProfileStore.SameEndpoint(pa, pb) && !ProfileStore.SameEndpoint(pa, pc), "");
             }
 
             // Manual-add dedup: the same link re-added updates in place; a different security/transport is a new server.
@@ -325,6 +422,66 @@ namespace CS_Ray.Core.Config
                     Check("dedup: xhttp auto = stream-one over REALITY", Add(X + "&mode=stream-one#x2"), "");
                 }
                 finally { try { System.IO.File.Delete(tmp); } catch { } }
+            }
+
+            // Share links: built from a parsed server, they parse back to the same server.
+            {
+                const string Id = "5d8a2b98-8129-4e5c-bc48-3f75e148d1a6";
+                var trips = new[]
+                {
+                    "vless://" + Id + "@r.example.com:443?type=tcp&security=reality&sni=www.apple.com&fp=chrome&pbk=q0ZjwXLc5OCk4V6-cLx3eKZYbcY3wbRW0V5yRS5pXGw&sid=ab12&spx=%2Fx&flow=xtls-rprx-vision#Reality%20%F0%9F%87%A9%F0%9F%87%AA",
+                    "vless://hello%20world@[2001:db8::1]:8443?type=ws&security=tls&sni=cdn.ex.com&host=cdn.ex.com&path=%2Fws%3Fed%3D2048&allowInsecure=1#v6",
+                    "vless://" + Id + "@x.example:443?type=xhttp&security=tls&sni=x.example&path=%2Fxh&mode=packet-up&extra=%7B%22xPaddingBytes%22%3A%22100-200%22%7D#xh",
+                    "vless://" + Id + "@1.2.3.4:80?type=tcp&security=none&headerType=http&host=a.com%2Cb.com&path=%2Fp#hh",
+                    "vless://" + Id + "@1.2.3.4:443?type=tcp&security=tls&sni=ex.com&fp=firefox#plain%20tls",
+                    "vmess://" + B64("{\"v\":\"2\",\"ps\":\"vm ws\",\"add\":\"1.2.3.4\",\"port\":\"443\",\"id\":\"" + Id + "\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"cdn.ex.com\",\"path\":\"/vm\",\"tls\":\"tls\",\"sni\":\"cdn.ex.com\",\"fp\":\"chrome\",\"insecure\":\"1\"}"),
+                    "vmess://" + Id + "@1.2.3.4:80?type=tcp&security=none&encryption=aes-128-gcm&headerType=http&host=h.com&path=%2Fa#std",
+                    "vmess://" + B64("{\"v\":\"2\",\"ps\":\"vx\",\"add\":\"x.example\",\"port\":443,\"id\":\"" + Id + "\",\"net\":\"xhttp\",\"type\":\"packet-up\",\"host\":\"x.example\",\"path\":\"/xh\",\"tls\":\"tls\",\"sni\":\"x.example\",\"extra\":{\"xPaddingBytes\":\"100-200\",\"headers\":{\"User-Agent\":\"firefox\"}}}"),
+                    "vmess://" + B64("{\"v\":\"2\",\"ps\":\"plain\",\"add\":\"1.2.3.4\",\"port\":\"10086\",\"id\":\"" + Id + "\",\"aid\":\"64\",\"net\":\"tcp\",\"type\":\"none\",\"tls\":\"\"}"),
+                    "ss://" + B64("chacha20-ietf-poly1305:p@ss:w0rd").TrimEnd('=').Replace('+', '-').Replace('/', '_') + "@5.6.7.8:8388#ss%20one",
+                    "socks://us%40er:p%3Ass@9.9.9.9:1080#sock",
+                    "https://u:p@proxy.example:443#hp",
+                };
+                var js = new System.Web.Script.Serialization.JavaScriptSerializer();
+                string Json(string x) { if (string.IsNullOrEmpty(x)) return ""; try { return js.Serialize(js.DeserializeObject(x)); } catch (Exception) { return x; } }
+                string Host(string h) => (h ?? "").Trim('[', ']');
+                string Diff(ProxyProfile a, ProxyProfile b)
+                {
+                    var d = new System.Collections.Generic.List<string>();
+                    void F(string n, object x, object y) { if (!Equals(x, y)) d.Add(n + ": '" + x + "' vs '" + y + "'"); }
+                    F("Protocol", a.Protocol, b.Protocol); F("Name", a.Name, b.Name); F("Server", Host(a.Server), Host(b.Server)); F("Port", a.Port, b.Port);
+                    F("Uuid", a.Uuid, b.Uuid); F("Password", a.Password, b.Password); F("Network", a.Network, b.Network);
+                    F("WsPath", a.WsPath, b.WsPath); F("WsHost", a.WsHost ?? "", b.WsHost ?? ""); F("HeaderType", a.HeaderType, b.HeaderType);
+                    F("UseTls", a.UseTls, b.UseTls); F("Sni", a.Sni ?? "", b.Sni ?? ""); F("AllowInsecure", a.AllowInsecure, b.AllowInsecure);
+                    F("Reality", a.Reality, b.Reality); F("pbk", a.RealityPublicKey, b.RealityPublicKey); F("sid", a.RealityShortId, b.RealityShortId);
+                    F("fp", a.Fingerprint ?? "", b.Fingerprint ?? ""); F("spx", a.SpiderX, b.SpiderX); F("Flow", a.Flow, b.Flow);
+                    F("XhttpMode", a.XhttpMode, b.XhttpMode); F("XhttpExtra", Json(a.XhttpExtra), Json(b.XhttpExtra));
+                    F("SsMethod", a.SsMethod, b.SsMethod); F("VmessSecurity", a.VmessSecurity, b.VmessSecurity);
+                    F("ProxyUser", a.ProxyUser, b.ProxyUser); F("ProxyPass", a.ProxyPass, b.ProxyPass); F("Unsupported", a.Unsupported, b.Unsupported);
+                    return string.Join("; ", d);
+                }
+                foreach (var src in trips)
+                {
+                    var a = LinkParser.Parse(src);
+                    string label = src.Substring(0, src.IndexOf(':')) + " " + (a.Ok ? a.Profile.Name : "?");
+                    if (!a.Ok || a.Profile.Unsupported) { Check("share round trip: " + label, false, a.Ok ? a.Profile.UnsupportedReason : a.Error); continue; }
+                    string link = ShareLink.Build(a.Profile, out string why);
+                    var b = link == null ? null : LinkParser.Parse(link);
+                    string diff = b == null ? "no link: " + why : !b.Ok ? b.Error : Diff(a.Profile, b.Profile);
+                    Check("share round trip: " + label, diff.Length == 0, diff + "  " + link);
+                }
+                var vm = ShareLink.Build(LinkParser.Parse(trips[5]).Profile, out _);
+                string vmJson = Encoding.UTF8.GetString(Convert.FromBase64String(vm.Substring(8)));
+                Check("share vmess: v2rayN JSON (v 2, string port, aid 0)", vmJson.StartsWith("{\"v\":\"2\",\"ps\":\"vm ws\",\"add\":\"1.2.3.4\",\"port\":\"443\"") && vmJson.Contains("\"aid\":\"0\""), vmJson);
+                var ssl = ShareLink.Build(LinkParser.Parse(trips[9]).Profile, out _);
+                Check("share ss: SIP002 base64url, no padding", ssl.StartsWith("ss://") && ssl.IndexOf('=') < 0 && ssl.EndsWith("@5.6.7.8:8388#ss%20one"), ssl);
+                var v6 = ShareLink.Build(LinkParser.Parse(trips[1]).Profile, out _);
+                // (.NET's Uri spells the parsed address out in full, 2001:0DB8:0000:…; still the same address)
+                Check("share IPv6 host bracketed once", v6.StartsWith("vless://hello%20world@[") && v6.Contains("]:8443?") && v6.Split('[').Length == 2, v6);
+                var grpc = LinkParser.Parse("vless://" + Id + "@1.2.3.4:443?type=grpc&security=tls&serviceName=s#g").Profile;
+                Check("share refuses an unsupported server", ShareLink.Build(grpc, out string gwhy) == null && gwhy.Contains("original link"), gwhy);
+                var noName = LinkParser.Parse("vless://" + Id + "@1.2.3.4:443?type=tcp&security=tls&sni=ex.com").Profile;
+                Check("share: a server without a name gets host:port", ShareLink.Build(noName, out _).EndsWith("#1.2.3.4%3A443"), ShareLink.Build(noName, out _));
             }
 
             // A truly malformed / unknown line is still rejected (distinct from recognized-but-unsupported).
